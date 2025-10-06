@@ -17,8 +17,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useState, useEffect, Component } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import DatePicker from "react-datepicker";
-import "react-datepicker/dist/react-datepicker.css";
 
 // Error Boundary Component
 class ErrorBoundary extends Component<any, { hasError: boolean }> {
@@ -44,15 +42,15 @@ class ErrorBoundary extends Component<any, { hasError: boolean }> {
 
 // Define interfaces for type safety
 interface EditingProgress {
-  id?: number;
+  id?: string; // Changed to string to match uuid
   phase: string;
   progress: number;
   status: string;
-  deadline: string | null;
+  start_date: string | null;
 }
 
 interface VfxShot {
-  id?: number;
+  id?: string; // Changed to string to match uuid
   shot: string;
   scene: number | string;
   description: string;
@@ -62,7 +60,7 @@ interface VfxShot {
 }
 
 interface AudioTrack {
-  id?: number;
+  id?: string; // Changed to string to match uuid
   track: string;
   status: string;
   engineer: string;
@@ -70,8 +68,8 @@ interface AudioTrack {
 }
 
 interface Deliverable {
-  id?: number;
-  item: string;
+  id?: string; // Changed to string to match uuid
+  name: string;
   status: string;
 }
 
@@ -86,6 +84,8 @@ const tableMap: Record<Section, TableName> = {
 };
 
 const PostProduction = () => {
+  console.log("Using PostProduction.tsx version a1b2c3d4e5");
+
   const [editingProgress, setEditingProgress] = useState<EditingProgress[]>([]);
   const [vfxShots, setVfxShots] = useState<VfxShot[]>([]);
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
@@ -108,61 +108,124 @@ const PostProduction = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  // Fetch data from Supabase
+  // Fetch projects and set selectedProjectId
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchProjects = async () => {
+      console.log("Fetching projects list");
       try {
-        // Fetch projects for the sidebar
+        setLoading(true);
+        setError(null);
         const { data: projectsData, error: projectsError } = await supabase
           .from("projects")
           .select("id, name");
         if (projectsError) {
           console.error("Projects fetch error:", projectsError);
-        } else {
-          setProjects(projectsData || []);
-          // Set the selected project ID (e.g., for "Pranayam Oru Thudakkam")
-          const selectedProject = projectsData?.find(
-            (p) => p.name === "Pranayam Oru Thudakkam"
-          );
-          if (selectedProject) {
-            setSelectedProjectId(selectedProject.id);
-          }
-        }
-
-        // Fetch project ID
-        const { data: project, error: projectError } = await supabase
-          .from("projects")
-          .select("id")
-          .eq("name", "Pranayam Oru Thudakkam")
-          .single();
-        if (projectError) {
-          console.error("Project fetch error:", projectError);
+          setError(`Failed to fetch projects: ${projectsError.message}`);
           return;
         }
-        const projectId = project.id;
+        console.log("Projects fetched:", projectsData);
+        setProjects(projectsData || []);
 
+        const storedProjectId = localStorage.getItem("selectedProjectId");
+        console.log("Stored selectedProjectId:", storedProjectId);
+        const selectedProject = projectsData?.find(
+          (p) => p.name === "Pranayam Oru Thudakkam"
+        );
+        if (
+          storedProjectId &&
+          projectsData?.some((p) => p.id === storedProjectId)
+        ) {
+          setSelectedProjectId(storedProjectId);
+        } else if (selectedProject) {
+          setSelectedProjectId(selectedProject.id);
+          localStorage.setItem("selectedProjectId", selectedProject.id);
+        } else if (projectsData?.length > 0) {
+          setSelectedProjectId(projectsData[0].id);
+          localStorage.setItem("selectedProjectId", projectsData[0].id);
+        } else {
+          setError("No projects available.");
+        }
+      } catch (err) {
+        console.error("Fetch projects error:", err);
+        setError("An unexpected error occurred while fetching projects.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchProjects();
+  }, []);
+
+  // Listen for localStorage changes
+  useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === "selectedProjectId") {
+        const newProjectId = event.newValue || "";
+        console.log(
+          "Storage event: selectedProjectId changed to",
+          newProjectId
+        );
+        if (newProjectId && projects.some((p) => p.id === newProjectId)) {
+          setSelectedProjectId(newProjectId);
+        } else {
+          setSelectedProjectId("");
+          setError("Selected project is invalid or not found.");
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, [projects]);
+
+  // Fetch project data
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!selectedProjectId) {
+        console.log("No selectedProjectId, skipping fetch");
+        setError("No project selected.");
+        setEditingProgress([]);
+        setVfxShots([]);
+        setAudioTracks([]);
+        setDeliverables([]);
+        setLoading(false);
+        return;
+      }
+      console.log("Fetching project data for ID:", selectedProjectId);
+      setLoading(true);
+      setError(null);
+      try {
         // Editing Progress (from schedules table)
         const { data: schedules, error: scheduleError } = await supabase
           .from("schedules")
-          .select("id, phase, progress, status, deadline")
-          .eq("project_id", projectId)
-          .is("phase", "not null");
+          .select("id, description, progress, status, start_date")
+          .eq("project_id", selectedProjectId)
+          .ilike("description", "%Cut%"); // Simplified filter
         if (scheduleError) {
           console.error("Editing fetch error:", scheduleError);
+          setError(
+            `Failed to fetch editing progress: ${scheduleError.message}`
+          );
+          setEditingProgress([]);
         } else {
+          console.log("Editing schedules fetched:", schedules);
           setEditingProgress(
-            schedules.length > 0
+            schedules?.length > 0
               ? schedules.map((schedule) => ({
                   id: schedule.id,
-                  phase: schedule.phase,
+                  phase: schedule.description || "Unknown",
                   progress: schedule.progress || 0,
-                  status: schedule.status,
-                  deadline: schedule.deadline
-                    ? new Date(schedule.deadline).toLocaleDateString("en-GB", {
-                        day: "2-digit",
-                        month: "short",
-                      })
+                  status: schedule.status || "Not Started",
+                  start_date: schedule.start_date
+                    ? new Date(schedule.start_date).toLocaleDateString(
+                        "en-GB",
+                        {
+                          day: "2-digit",
+                          month: "short",
+                        }
+                      )
                     : "TBD",
                 }))
               : [
@@ -170,25 +233,25 @@ const PostProduction = () => {
                     phase: "Rough Cut",
                     progress: 100,
                     status: "Completed",
-                    deadline: "15 Sep",
+                    start_date: "15 Sep",
                   },
                   {
                     phase: "Fine Cut",
                     progress: 85,
                     status: "In Progress",
-                    deadline: "10 Oct",
+                    start_date: "10 Oct",
                   },
                   {
                     phase: "Final Cut",
                     progress: 0,
                     status: "Not Started",
-                    deadline: "25 Oct",
+                    start_date: "25 Oct",
                   },
                   {
                     phase: "Color Grading",
                     progress: 0,
                     status: "Not Started",
-                    deadline: "05 Nov",
+                    start_date: "05 Nov",
                   },
                 ]
           );
@@ -198,60 +261,118 @@ const PostProduction = () => {
         const { data: vfxSchedules, error: vfxScheduleError } = await supabase
           .from("schedules")
           .select("id, scene_id, description, status, progress")
-          .eq("project_id", projectId)
-          .limit(3);
+          .eq("project_id", selectedProjectId)
+          .ilike("description", "VFX%");
         const { data: vfxCrew, error: vfxCrewError } = await supabase
           .from("crew")
           .select("name")
-          .eq("role", "VFX Supervisor")
-          .limit(3);
+          .eq("project_id", selectedProjectId)
+          .eq("role", "VFX Supervisor");
         if (vfxScheduleError || vfxCrewError) {
           console.error("VFX fetch error:", vfxScheduleError || vfxCrewError);
+          setError(
+            `Failed to fetch VFX shots: ${
+              (vfxScheduleError || vfxCrewError)?.message
+            }`
+          );
+          setVfxShots([]);
         } else {
+          console.log("VFX schedules fetched:", vfxSchedules);
           setVfxShots(
-            vfxSchedules.map((schedule, idx) => ({
-              id: schedule.id,
-              shot: `VFX-${String(idx + 1).padStart(3, "0")}`,
-              scene: schedule.scene_id,
-              description: schedule.description || "VFX Task",
-              status:
-                schedule.status ||
-                ["Modeling", "Compositing", "Review"][idx % 3],
-              artist: vfxCrew[idx]?.name || "TBD",
-              progress: schedule.progress || [60, 80, 95][idx % 3],
-            }))
+            vfxSchedules?.length > 0
+              ? vfxSchedules.map((schedule, idx) => ({
+                  id: schedule.id,
+                  shot:
+                    schedule.description ||
+                    `VFX-${String(idx + 1).padStart(3, "0")}`,
+                  scene: schedule.scene_id,
+                  description: schedule.description || "VFX Task",
+                  status:
+                    schedule.status ||
+                    ["Modeling", "Compositing", "Review"][idx % 3],
+                  artist: vfxCrew[idx]?.name || "TBD",
+                  progress: schedule.progress || [60, 80, 95][idx % 3],
+                }))
+              : [
+                  {
+                    shot: "VFX-001",
+                    scene: 1,
+                    description: "Explosion Scene",
+                    status: "Modeling",
+                    artist: "TBD",
+                    progress: 60,
+                  },
+                  {
+                    shot: "VFX-002",
+                    scene: 2,
+                    description: "CGI Environment",
+                    status: "Compositing",
+                    artist: "TBD",
+                    progress: 80,
+                  },
+                  {
+                    shot: "VFX-003",
+                    scene: 3,
+                    description: "Character Effect",
+                    status: "Review",
+                    artist: "TBD",
+                    progress: 95,
+                  },
+                ]
           );
         }
 
-        // Audio Tracks (from crew table with audio roles)
+        // Audio Tracks (from crew table)
         const { data: audioCrew, error: audioCrewError } = await supabase
           .from("crew")
-          .select("id, name, role")
-          .filter("role", "ilike", "%sound%")
-          .limit(4);
+          .select("id, name, role, status, duration")
+          .eq("project_id", selectedProjectId)
+          .ilike("role", "%sound%");
         if (audioCrewError) {
           console.error("Audio fetch error:", audioCrewError);
+          setError(`Failed to fetch audio tracks: ${audioCrewError.message}`);
+          setAudioTracks([]);
         } else {
+          console.log("Audio crew fetched:", audioCrew);
           setAudioTracks(
-            audioCrew.map((crew, idx) => ({
-              id: crew.id,
-              track: [
-                "Dialogue Edit",
-                "Sound Design",
-                "Background Score",
-                "Final Mix",
-              ][idx],
-              status:
-                idx === 0
-                  ? "Completed"
-                  : idx === 1
-                  ? "In Progress"
-                  : idx === 2
-                  ? "Composing"
-                  : "Pending",
-              engineer: crew.name || "TBD",
-              duration: idx < 2 ? "1h 42m" : "TBD",
-            }))
+            audioCrew?.length > 0
+              ? audioCrew.map((crew, idx) => ({
+                  id: crew.id,
+                  track: crew.role || "Unknown",
+                  status:
+                    crew.status ||
+                    ["Completed", "In Progress", "Composing", "Pending"][
+                      idx % 4
+                    ],
+                  engineer: crew.name || "TBD",
+                  duration: crew.duration || "TBD",
+                }))
+              : [
+                  {
+                    track: "Sound Editor",
+                    status: "Completed",
+                    engineer: "TBD",
+                    duration: "1h 42m",
+                  },
+                  {
+                    track: "Sound Designer",
+                    status: "In Progress",
+                    engineer: "TBD",
+                    duration: "TBD",
+                  },
+                  {
+                    track: "Composer",
+                    status: "Composing",
+                    engineer: "TBD",
+                    duration: "TBD",
+                  },
+                  {
+                    track: "Sound Mixer",
+                    status: "Pending",
+                    engineer: "TBD",
+                    duration: "TBD",
+                  },
+                ]
           );
         }
 
@@ -259,38 +380,52 @@ const PostProduction = () => {
         const { data: deliverableData, error: deliverableError } =
           await supabase
             .from("deliverables")
-            .select("id, item, status")
-            .eq("project_id", projectId);
+            .select("id, name, status")
+            .eq("project_id", selectedProjectId);
         if (deliverableError) {
           console.error("Deliverables fetch error:", deliverableError);
+          setError(`Failed to fetch deliverables: ${deliverableError.message}`);
+          setDeliverables([]);
         } else {
+          console.log("Deliverables fetched:", deliverableData);
           setDeliverables(
-            deliverableData.length > 0
-              ? deliverableData
+            deliverableData?.length > 0
+              ? deliverableData.map((d) => ({
+                  id: d.id,
+                  name: d.name,
+                  status: d.status,
+                }))
               : [
-                  { item: "DCP (Digital Cinema Package)", status: "Pending" },
-                  { item: "ProRes Master File", status: "Pending" },
+                  { name: "DCP (Digital Cinema Package)", status: "Pending" },
+                  { name: "ProRes Master File", status: "Pending" },
                   {
-                    item: "Subtitles (Telugu/Malayalam)",
+                    name: "Subtitles (Telugu/Malayalam)",
                     status: "In Progress",
                   },
-                  { item: "Trailer Cuts", status: "In Progress" },
+                  { name: "Trailer Cuts", status: "In Progress" },
                 ]
           );
         }
-      } catch (error) {
-        console.error("Fetch error:", error);
+      } catch (err: any) {
+        console.error("Fetch project data error:", err);
+        setError(`An unexpected error occurred: ${err.message || err}`);
+        setEditingProgress([]);
+        setVfxShots([]);
+        setAudioTracks([]);
+        setDeliverables([]);
+      } finally {
+        setLoading(false);
       }
     };
-
     fetchData();
-  }, []);
+  }, [selectedProjectId, refreshKey]);
 
   // Handle project deletion
   const onDeleteProject = async () => {
     if (!selectedProjectId) return;
     setIsSubmitting(true);
     try {
+      console.log("Deleting project with ID:", selectedProjectId);
       const { error } = await supabase
         .from("projects")
         .delete()
@@ -298,51 +433,45 @@ const PostProduction = () => {
       if (error) throw error;
       setProjects(projects.filter((p) => p.id !== selectedProjectId));
       setSelectedProjectId("");
+      localStorage.removeItem("selectedProjectId");
       alert("Project deleted successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Delete project error:", error);
-      alert("Failed to delete project.");
+      alert(`Failed to delete project: ${error.message}`);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Handle updates to Supabase - Consolidated CRUD
+  // Handle updates to Supabase
   const handleSave = async (section: Section) => {
-    if (isSaving) return;
+    if (isSaving || !selectedProjectId) return;
     setIsSaving(true);
     try {
-      const { data: projectData } = await supabase
-        .from("projects")
-        .select("id")
-        .eq("name", "Pranayam Oru Thudakkam")
-        .single();
-      const projectId = projectData?.id;
-      if (!projectId) {
-        throw new Error("Project not found");
-      }
-
+      console.log(`Saving ${section} for project ID:`, selectedProjectId);
       const table = tableMap[section];
 
       if (section === "editingProgress") {
         // Update existing editing progress
         for (const edit of editingProgress.filter((e) => e.id !== undefined)) {
-          const deadlineDate =
-            edit.deadline && edit.deadline !== "TBD"
-              ? new Date(edit.deadline.split(" ").reverse().join("-"))
+          const startDate =
+            edit.start_date && edit.start_date !== "TBD"
+              ? new Date(edit.start_date.split(" ").reverse().join("-"))
                   .toISOString()
                   .split("T")[0]
               : null;
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
-              phase: edit.phase,
+              project_id: selectedProjectId,
+              description: edit.phase,
               progress: edit.progress,
               status: edit.status,
-              deadline: deadlineDate,
+              start_date: startDate,
+              scene_id: 0, // Default for editing tasks
             })
-            .eq("id", edit.id);
+            .eq("id", edit.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new editing progress
@@ -350,10 +479,11 @@ const PostProduction = () => {
           newEditingProgress.phase &&
           newEditingProgress.progress !== undefined
         ) {
-          const deadlineDate =
-            newEditingProgress.deadline && newEditingProgress.deadline !== "TBD"
+          const startDate =
+            newEditingProgress.start_date &&
+            newEditingProgress.start_date !== "TBD"
               ? new Date(
-                  newEditingProgress.deadline.split(" ").reverse().join("-")
+                  newEditingProgress.start_date.split(" ").reverse().join("-")
                 )
                   .toISOString()
                   .split("T")[0]
@@ -361,11 +491,12 @@ const PostProduction = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
-              phase: newEditingProgress.phase,
+              project_id: selectedProjectId,
+              description: newEditingProgress.phase,
               progress: newEditingProgress.progress || 0,
               status: newEditingProgress.status || "Not Started",
-              deadline: deadlineDate,
+              start_date: startDate,
+              scene_id: 0, // Default for editing tasks
             })
             .select("id")
             .single();
@@ -376,7 +507,7 @@ const PostProduction = () => {
               {
                 ...newEditingProgress,
                 id: insertedData.id,
-                deadline: newEditingProgress.deadline || "TBD",
+                start_date: newEditingProgress.start_date || "TBD",
               } as EditingProgress,
             ]);
             setNewEditingProgress({});
@@ -388,13 +519,14 @@ const PostProduction = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               scene_id: vfx.scene,
               description: vfx.description,
               status: vfx.status,
               progress: vfx.progress,
             })
-            .eq("id", vfx.id);
+            .eq("id", vfx.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new VFX shot
@@ -402,7 +534,7 @@ const PostProduction = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               scene_id: newVfxShot.scene,
               description: newVfxShot.description,
               status: newVfxShot.status || "Modeling",
@@ -431,14 +563,15 @@ const PostProduction = () => {
           const { error } = await supabase
             .from(table)
             .update({
+              project_id: selectedProjectId,
               name: audio.engineer,
-              role: audio.track.includes("Dialogue")
-                ? "Sound Editor"
-                : audio.track.includes("Score")
-                ? "Composer"
-                : "Sound Mixer",
+              role: audio.track,
+              status: audio.status,
+              duration: audio.duration === "TBD" ? null : audio.duration,
+              department: "Audio", // Default for audio tracks
             })
-            .eq("id", audio.id);
+            .eq("id", audio.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new audio track
@@ -446,12 +579,15 @@ const PostProduction = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
+              project_id: selectedProjectId,
               name: newAudioTrack.engineer,
-              role: newAudioTrack.track.includes("Dialogue")
-                ? "Sound Editor"
-                : newAudioTrack.track.includes("Score")
-                ? "Composer"
-                : "Sound Mixer",
+              role: newAudioTrack.track,
+              status: newAudioTrack.status || "Pending",
+              duration:
+                newAudioTrack.duration === "TBD"
+                  ? null
+                  : newAudioTrack.duration,
+              department: "Audio", // Default for audio tracks
             })
             .select("id")
             .single();
@@ -477,21 +613,26 @@ const PostProduction = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
-              item: deliverable.item,
+              project_id: selectedProjectId,
+              name: deliverable.name,
               status: deliverable.status,
+              due_date: "2025-12-31", // Default, since not used in UI
+              type: "File", // Default, since not used in UI
             })
-            .eq("id", deliverable.id);
+            .eq("id", deliverable.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new deliverable
-        if (newDeliverable.item) {
+        if (newDeliverable.name) {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
-              item: newDeliverable.item,
+              project_id: selectedProjectId,
+              name: newDeliverable.name,
               status: newDeliverable.status || "Pending",
+              due_date: "2025-12-31", // Default, since not used in UI
+              type: "File", // Default, since not used in UI
             })
             .select("id")
             .single();
@@ -510,13 +651,13 @@ const PostProduction = () => {
         }
       }
 
+      console.log(`${section} saved successfully`);
+      setRefreshKey((prev) => prev + 1);
       setEditMode({ ...editMode, [section]: false });
       alert("Changes saved successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Save ${section} error:`, error);
-      alert(
-        `Failed to save changes for ${section}. Check console for details.`
-      );
+      alert(`Failed to save changes for ${section}: ${error.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -538,7 +679,7 @@ const PostProduction = () => {
           ...newEditingProgress,
           id: undefined,
           status: newEditingProgress.status || "Not Started",
-          deadline: newEditingProgress.deadline || "TBD",
+          start_date: newEditingProgress.start_date || "TBD",
         } as EditingProgress,
       ]);
       setNewEditingProgress({});
@@ -574,7 +715,7 @@ const PostProduction = () => {
       ]);
       setNewAudioTrack({});
     } else if (section === "deliverables") {
-      if (!newDeliverable.item) {
+      if (!newDeliverable.name) {
         alert("Please fill in Item field.");
         return;
       }
@@ -591,7 +732,7 @@ const PostProduction = () => {
   };
 
   // Handle deleting items
-  const handleDelete = async (section: Section, id: number) => {
+  const handleDelete = async (section: Section, id: string) => {
     if (
       !window.confirm(
         `Are you sure you want to delete this ${section.slice(0, -1)}?`
@@ -600,8 +741,13 @@ const PostProduction = () => {
       return;
     }
     try {
+      console.log(`Deleting ${section} with ID:`, id);
       const table = tableMap[section];
-      const { error } = await supabase.from(table).delete().eq("id", id);
+      const { error } = await supabase
+        .from(table)
+        .delete()
+        .eq("id", id)
+        .eq("project_id", selectedProjectId);
       if (error) throw error;
       if (section === "editingProgress") {
         setEditingProgress(editingProgress.filter((e) => e.id !== id));
@@ -613,15 +759,13 @@ const PostProduction = () => {
         setDeliverables(deliverables.filter((d) => d.id !== id));
       }
       alert(`${section.slice(0, -1)} deleted successfully!`);
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Delete ${section} error:`, error);
-      alert(
-        `Failed to delete ${section.slice(0, -1)}. Check console for details.`
-      );
+      alert(`Failed to delete ${section.slice(0, -1)}: ${error.message}`);
     }
   };
 
-  // Cancel edit mode and reset new item forms
+  // Cancel edit mode and reset forms
   const handleCancel = (section: Section) => {
     if (section === "editingProgress") {
       setNewEditingProgress({});
@@ -632,8 +776,22 @@ const PostProduction = () => {
     } else if (section === "deliverables") {
       setNewDeliverable({});
     }
+    setRefreshKey((prev) => prev + 1); // Re-fetch data
     setEditMode({ ...editMode, [section]: false });
   };
+
+  // Render loading or error states
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
+
+  if (!selectedProjectId) {
+    return <div>Please select a project from the sidebar.</div>;
+  }
 
   return (
     <ErrorBoundary>
@@ -695,7 +853,7 @@ const PostProduction = () => {
                   {editMode.editingProgress && (
                     <div className="p-3 bg-secondary/20 rounded-lg space-y-2 mb-3">
                       <Input
-                        placeholder="Phase"
+                        placeholder="Phase (e.g., Rough Cut)"
                         value={newEditingProgress.phase || ""}
                         onChange={(e) =>
                           setNewEditingProgress({
@@ -735,32 +893,16 @@ const PostProduction = () => {
                         <option value="In Progress">In Progress</option>
                         <option value="Completed">Completed</option>
                       </select>
-                      <DatePicker
-                        selected={
-                          newEditingProgress.deadline &&
-                          newEditingProgress.deadline !== "TBD"
-                            ? new Date(
-                                newEditingProgress.deadline
-                                  .split(" ")
-                                  .reverse()
-                                  .join("-")
-                              )
-                            : null
-                        }
-                        onChange={(date: Date | null) =>
+                      <Input
+                        placeholder="Start Date (e.g., 15 Sep)"
+                        value={newEditingProgress.start_date || ""}
+                        onChange={(e) =>
                           setNewEditingProgress({
                             ...newEditingProgress,
-                            deadline: date
-                              ? date.toLocaleDateString("en-GB", {
-                                  day: "2-digit",
-                                  month: "short",
-                                })
-                              : "TBD",
+                            start_date: e.target.value,
                           })
                         }
-                        placeholderText="Select Deadline"
-                        dateFormat="dd MMM"
-                        className="w-full p-2 border border-input rounded-md mb-2"
+                        className="mb-2"
                       />
                     </div>
                   )}
@@ -784,7 +926,7 @@ const PostProduction = () => {
                               onClick={() =>
                                 handleDelete("editingProgress", edit.id!)
                               }
-                              disabled={isSaving}
+                              disabled={isSaving || !edit.id}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -813,27 +955,15 @@ const PostProduction = () => {
                             <option value="In Progress">In Progress</option>
                             <option value="Completed">Completed</option>
                           </select>
-                          <DatePicker
-                            selected={
-                              edit.deadline && edit.deadline !== "TBD"
-                                ? new Date(
-                                    edit.deadline.split(" ").reverse().join("-")
-                                  )
-                                : null
-                            }
-                            onChange={(date: Date | null) => {
+                          <Input
+                            placeholder="Start Date (e.g., 15 Sep)"
+                            value={edit.start_date || ""}
+                            onChange={(e) => {
                               const newProgress = [...editingProgress];
-                              newProgress[idx].deadline = date
-                                ? date.toLocaleDateString("en-GB", {
-                                    day: "2-digit",
-                                    month: "short",
-                                  })
-                                : "TBD";
+                              newProgress[idx].start_date = e.target.value;
                               setEditingProgress(newProgress);
                             }}
-                            placeholderText="Select Deadline"
-                            dateFormat="dd MMM"
-                            className="w-full p-2 border border-input rounded-md mb-2"
+                            className="mb-2"
                           />
                         </>
                       ) : (
@@ -844,7 +974,7 @@ const PostProduction = () => {
                                 {edit.phase}
                               </p>
                               <p className="text-xs text-muted-foreground">
-                                Deadline: {edit.deadline}
+                                Start: {edit.start_date}
                               </p>
                             </div>
                             <Badge
@@ -1010,7 +1140,7 @@ const PostProduction = () => {
                               variant="destructive"
                               size="sm"
                               onClick={() => handleDelete("vfxShots", vfx.id!)}
-                              disabled={isSaving}
+                              disabled={isSaving || !vfx.id}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -1148,7 +1278,7 @@ const PostProduction = () => {
                   {editMode.audioTracks && (
                     <div className="p-3 bg-secondary/20 rounded-lg space-y-2 mb-3">
                       <Input
-                        placeholder="Track"
+                        placeholder="Track (e.g., Sound Editor)"
                         value={newAudioTrack.track || ""}
                         onChange={(e) =>
                           setNewAudioTrack({
@@ -1253,7 +1383,7 @@ const PostProduction = () => {
                             onClick={() =>
                               handleDelete("audioTracks", audio.id!)
                             }
-                            disabled={isSaving}
+                            disabled={isSaving || !audio.id}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -1334,11 +1464,11 @@ const PostProduction = () => {
                     <div className="p-3 bg-secondary/20 rounded-lg space-y-2 mb-3">
                       <Input
                         placeholder="Item"
-                        value={newDeliverable.item || ""}
+                        value={newDeliverable.name || ""}
                         onChange={(e) =>
                           setNewDeliverable({
                             ...newDeliverable,
-                            item: e.target.value,
+                            name: e.target.value,
                           })
                         }
                         className="mb-2"
@@ -1368,10 +1498,10 @@ const PostProduction = () => {
                         <>
                           <div className="flex-1 space-y-2 mr-2">
                             <Input
-                              value={deliverable.item}
+                              value={deliverable.name}
                               onChange={(e) => {
                                 const newDeliverables = [...deliverables];
-                                newDeliverables[idx].item = e.target.value;
+                                newDeliverables[idx].name = e.target.value;
                                 setDeliverables(newDeliverables);
                               }}
                               className="mb-2"
@@ -1396,14 +1526,14 @@ const PostProduction = () => {
                             onClick={() =>
                               handleDelete("deliverables", deliverable.id!)
                             }
-                            disabled={isSaving}
+                            disabled={isSaving || !deliverable.id}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </>
                       ) : (
                         <>
-                          <span className="text-sm">{deliverable.item}</span>
+                          <span className="text-sm">{deliverable.name}</span>
                           <Badge
                             variant={
                               deliverable.status === "Pending"

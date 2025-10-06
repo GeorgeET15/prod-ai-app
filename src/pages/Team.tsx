@@ -23,15 +23,12 @@ import "react-datepicker/dist/react-datepicker.css";
 // Error Boundary Component
 class ErrorBoundary extends Component<any, { hasError: boolean }> {
   state = { hasError: false };
-
   static getDerivedStateFromError(error: any) {
     return { hasError: true };
   }
-
   componentDidCatch(error: any, errorInfo: any) {
     console.error("Error caught by boundary:", error, errorInfo);
   }
-
   render() {
     if (this.state.hasError) {
       return (
@@ -44,16 +41,17 @@ class ErrorBoundary extends Component<any, { hasError: boolean }> {
 
 // Define interfaces for type safety
 interface KeyPersonnel {
-  id?: number;
+  id?: string;
   name: string;
   role: string;
   department: string;
   status: string;
   contact: string;
+  available: string;
 }
 
 interface Department {
-  id?: number;
+  id?: string;
   name: string;
   headCount: number;
   lead: string;
@@ -62,7 +60,7 @@ interface Department {
 }
 
 interface Attendance {
-  id?: number;
+  id?: string;
   date: Date;
   present: number;
   absent: number;
@@ -71,7 +69,7 @@ interface Attendance {
 }
 
 interface Payroll {
-  id?: number;
+  id?: string;
   category: string;
   amount: string;
   status: string;
@@ -89,6 +87,8 @@ const tableMap: Record<Section, TableName> = {
 };
 
 const Team = () => {
+  console.log("Using Team.tsx version b2c3d4e5_2");
+
   const [keyPersonnel, setKeyPersonnel] = useState<KeyPersonnel[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
@@ -107,6 +107,9 @@ const Team = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const getInitials = (name: string) => {
     return name
@@ -116,70 +119,121 @@ const Team = () => {
       .toUpperCase();
   };
 
-  // Fetch data from Supabase
+  // Debug state changes
   useEffect(() => {
-    const fetchData = async () => {
+    console.log("Edit mode state:", editMode);
+    console.log("Is saving:", isSaving);
+    console.log("Is submitting:", isSubmitting);
+  }, [editMode, isSaving, isSubmitting]);
+
+  // Fetch projects and set selectedProjectId from localStorage
+  useEffect(() => {
+    const fetchProjects = async () => {
+      console.log("Fetching projects list");
       try {
-        // Fetch projects for the sidebar
+        setLoading(true);
+        setError(null);
         const { data: projectsData, error: projectsError } = await supabase
           .from("projects")
           .select("id, name");
         if (projectsError) {
           console.error("Projects fetch error:", projectsError);
+          setError(`Failed to fetch projects: ${projectsError.message}`);
+          return;
+        }
+        console.log("Projects fetched:", projectsData);
+        setProjects(projectsData || []);
+
+        const storedProjectId = localStorage.getItem("selectedProjectId");
+        console.log("Stored selectedProjectId:", storedProjectId);
+        if (
+          storedProjectId &&
+          projectsData?.some((p) => p.id === storedProjectId)
+        ) {
+          setSelectedProjectId(storedProjectId);
+        } else if (projectsData?.length > 0) {
+          setSelectedProjectId(projectsData[0].id);
+          localStorage.setItem("selectedProjectId", projectsData[0].id);
         } else {
-          setProjects(projectsData || []);
-          // Set the selected project ID (e.g., for "Pranayam Oru Thudakkam")
-          const selectedProject = projectsData?.find(
-            (p) => p.name === "Pranayam Oru Thudakkam"
-          );
-          if (selectedProject) {
-            setSelectedProjectId(selectedProject.id);
-          }
+          setError("No projects available. Please create a project first.");
         }
+      } catch (err) {
+        console.error("Fetch projects error:", err);
+        setError("An unexpected error occurred while fetching projects.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchProjects();
+  }, []);
 
-        // Fetch project data
-        const { data: projectData, error: projectError } = await supabase
-          .from("projects")
-          .select("id")
-          .eq("name", "Pranayam Oru Thudakkam")
-          .single();
-        if (projectError) {
-          console.error("Project fetch error:", projectError);
-          return;
+  // Listen for localStorage changes
+  useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === "selectedProjectId") {
+        const newProjectId = event.newValue || "";
+        console.log(
+          "Storage event: selectedProjectId changed to",
+          newProjectId
+        );
+        if (newProjectId && projects.some((p) => p.id === newProjectId)) {
+          setSelectedProjectId(newProjectId);
+        } else {
+          setSelectedProjectId("");
+          setError("Selected project is invalid or not found.");
         }
-        const projectId = projectData?.id;
-        if (!projectId) {
-          console.error("Project not found");
-          return;
-        }
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, [projects]);
 
+  // Fetch data from Supabase
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!selectedProjectId) {
+        console.log("No selectedProjectId, skipping fetch");
+        setError("No project selected.");
+        setKeyPersonnel([]);
+        setDepartments([]);
+        setAttendance([]);
+        setPayroll([]);
+        setLoading(false);
+        return;
+      }
+      console.log("Fetching project data for ID:", selectedProjectId);
+      setLoading(true);
+      setError(null);
+      try {
         // Key Personnel
         const { data: crew, error: crewError } = await supabase
           .from("crew")
-          .select("id, name, role, department, status, contact")
-          .eq("project_id", projectId)
-          .limit(5);
-        if (crewError) console.error("Crew fetch error:", crewError);
-        else {
+          .select("id, name, role, department, status, contact, available")
+          .eq("project_id", selectedProjectId);
+        if (crewError) {
+          console.error("Crew fetch error:", crewError);
+          if (crewError.message.includes("Could not find the table")) {
+            setError(
+              "The 'crew' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor."
+            );
+          } else {
+            setError(`Failed to fetch crew: ${crewError.message}`);
+          }
+          setKeyPersonnel([]);
+        } else {
+          console.log("Crew fetched:", crew);
           setKeyPersonnel(
-            crew?.map((person, idx) => ({
-              id: person.id,
-              name: person.name || "TBD",
-              role:
-                person.role ||
-                [
-                  "Director",
-                  "Producer",
-                  "DOP",
-                  "Art Director",
-                  "Sound Designer",
-                ][idx],
-              department:
-                person.department ||
-                ["Creative", "Production", "Camera", "Art", "Sound"][idx],
-              status: person.status || (idx < 3 ? "On Set" : "Post-Production"),
-              contact: person.contact || `+91 98765 4321${idx}`,
-            })) || []
+            crew?.length > 0
+              ? crew.map((person) => ({
+                  id: person.id,
+                  name: person.name || "TBD",
+                  role: person.role || "Unknown",
+                  department: person.department || "Unknown",
+                  status: person.status || "On Set",
+                  contact: person.contact || "",
+                  available: person.available || "Full Day",
+                }))
+              : []
           );
         }
 
@@ -187,37 +241,34 @@ const Team = () => {
         const { data: deptData, error: deptError } = await supabase
           .from("departments")
           .select("id, name, head_count, lead, budget, status")
-          .eq("project_id", projectId)
-          .limit(5);
-        if (deptError) console.error("Departments fetch error:", deptError);
-        else {
+          .eq("project_id", selectedProjectId);
+        if (deptError) {
+          console.error("Departments fetch error:", deptError);
+          if (deptError.message.includes("Could not find the table")) {
+            setError(
+              "The 'departments' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor."
+            );
+          } else {
+            setError(`Failed to fetch departments: ${deptError.message}`);
+          }
+          setDepartments([]);
+        } else {
+          console.log("Departments fetched:", deptData);
           setDepartments(
-            deptData?.map((dept, idx) => ({
-              id: dept.id,
-              name:
-                dept.name ||
-                [
-                  "Camera Department",
-                  "Art Department",
-                  "Sound Department",
-                  "Costume & Makeup",
-                  "VFX Team",
-                ][idx],
-              headCount: dept.head_count || [12, 18, 8, 15, 22][idx],
-              lead:
-                dept.lead ||
-                [
-                  "Ravi Varma",
-                  "Meera Reddy",
-                  "Suresh Kumar",
-                  "Lakshmi Devi",
-                  "Anil Mehta",
-                ][idx],
-              budget: dept.budget
-                ? `₹${(dept.budget / 100000).toFixed(0)}L`
-                : ["₹85L", "₹1.2 Cr", "₹45L", "₹65L", "₹2.8 Cr"][idx],
-              status: dept.status || (idx === 4 ? "Post-Production" : "Active"),
-            })) || []
+            deptData?.length > 0
+              ? deptData.map((dept) => ({
+                  id: dept.id,
+                  name: dept.name || "Unknown",
+                  headCount: dept.head_count || 0,
+                  lead: dept.lead || "TBD",
+                  budget: dept.budget
+                    ? dept.budget >= 10000000
+                      ? `₹${(dept.budget / 10000000).toFixed(1)} Cr`
+                      : `₹${(dept.budget / 100000).toFixed(0)}L`
+                    : "₹0L",
+                  status: dept.status || "Active",
+                }))
+              : []
           );
         }
 
@@ -225,21 +276,31 @@ const Team = () => {
         const { data: attendanceData, error: attendanceError } = await supabase
           .from("attendance")
           .select("id, date, present, absent, late, total")
-          .eq("project_id", projectId)
-          .order("date", { ascending: false })
-          .limit(3);
-        if (attendanceError)
+          .eq("project_id", selectedProjectId)
+          .order("date", { ascending: false });
+        if (attendanceError) {
           console.error("Attendance fetch error:", attendanceError);
-        else {
+          if (attendanceError.message.includes("Could not find the table")) {
+            setError(
+              "The 'attendance' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor."
+            );
+          } else {
+            setError(`Failed to fetch attendance: ${attendanceError.message}`);
+          }
+          setAttendance([]);
+        } else {
+          console.log("Attendance fetched:", attendanceData);
           setAttendance(
-            attendanceData?.map((record, idx) => ({
-              id: record.id,
-              date: new Date(record.date),
-              present: record.present || [118, 125, 120][idx % 3],
-              absent: record.absent || [9, 2, 4][idx % 3],
-              late: record.late || [5, 3, 6][idx % 3],
-              total: record.total || 127,
-            })) || []
+            attendanceData?.length > 0
+              ? attendanceData.map((record) => ({
+                  id: record.id,
+                  date: new Date(record.date),
+                  present: record.present || 0,
+                  absent: record.absent || 0,
+                  late: record.late || 0,
+                  total: record.total || 0,
+                }))
+              : []
           );
         }
 
@@ -247,45 +308,58 @@ const Team = () => {
         const { data: payrollData, error: payrollError } = await supabase
           .from("payroll")
           .select("id, category, amount, status, due_date")
-          .eq("project_id", projectId)
-          .order("due_date", { ascending: true })
-          .limit(4);
-        if (payrollError) console.error("Payroll fetch error:", payrollError);
-        else {
+          .eq("project_id", selectedProjectId)
+          .order("due_date", { ascending: true });
+        if (payrollError) {
+          console.error("Payroll fetch error:", payrollError);
+          if (payrollError.message.includes("Could not find the table")) {
+            setError(
+              "The 'payroll' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor."
+            );
+          } else {
+            setError(`Failed to fetch payroll: ${payrollError.message}`);
+          }
+          setPayroll([]);
+        } else {
+          console.log("Payroll fetched:", payrollData);
           setPayroll(
-            payrollData?.map((payment, idx) => ({
-              id: payment.id,
-              category:
-                payment.category ||
-                [
-                  "Key Crew",
-                  "Supporting Crew",
-                  "Daily Wage Workers",
-                  "Vendors & Freelancers",
-                ][idx],
-              amount: payment.amount
-                ? `₹${(payment.amount / 100000).toFixed(0)}L`
-                : ["₹45L", "₹28L", "₹12L", "₹35L"][idx],
-              status: payment.status || (idx < 2 ? "Processed" : "Pending"),
-              date: payment.due_date
-                ? new Date(payment.due_date)
-                : new Date(`2025-10-${["01", "01", "05", "07"][idx]}`),
-            })) || []
+            payrollData?.length > 0
+              ? payrollData.map((payment) => ({
+                  id: payment.id,
+                  category: payment.category || "Unknown",
+                  amount: payment.amount
+                    ? payment.amount >= 10000000
+                      ? `₹${(payment.amount / 10000000).toFixed(1)} Cr`
+                      : `₹${(payment.amount / 100000).toFixed(0)}L`
+                    : "₹0L",
+                  status: payment.status || "Pending",
+                  date: payment.due_date
+                    ? new Date(payment.due_date)
+                    : new Date(),
+                }))
+              : []
           );
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error("Fetch error:", error);
+        setError(`An unexpected error occurred: ${error.message || error}`);
+        setKeyPersonnel([]);
+        setDepartments([]);
+        setAttendance([]);
+        setPayroll([]);
+      } finally {
+        setLoading(false);
       }
     };
-
     fetchData();
-  }, []);
+  }, [selectedProjectId, refreshKey]);
 
   // Handle project deletion
   const onDeleteProject = async () => {
     if (!selectedProjectId) return;
     setIsSubmitting(true);
     try {
+      console.log("Deleting project with ID:", selectedProjectId);
       const { error } = await supabase
         .from("projects")
         .delete()
@@ -293,31 +367,26 @@ const Team = () => {
       if (error) throw error;
       setProjects(projects.filter((p) => p.id !== selectedProjectId));
       setSelectedProjectId("");
+      localStorage.removeItem("selectedProjectId");
       alert("Project deleted successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Delete project error:", error);
-      alert("Failed to delete project.");
+      setError(`Failed to delete project: ${error.message}`);
+      alert(`Failed to delete project: ${error.message}`);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Handle updates to Supabase - Consolidated CRUD
+  // Handle updates to Supabase
   const handleSave = async (section: Section) => {
-    if (isSaving) return;
+    if (isSaving || !selectedProjectId) return;
     setIsSaving(true);
+    let table: TableName | undefined;
     try {
-      const { data: projectData } = await supabase
-        .from("projects")
-        .select("id")
-        .eq("name", "Pranayam Oru Thudakkam")
-        .single();
-      const projectId = projectData?.id;
-      if (!projectId) {
-        throw new Error("Project not found");
-      }
-
-      const table = tableMap[section];
+      console.log(`Saving ${section} for project ID:`, selectedProjectId);
+      table = tableMap[section];
+      if (!table) throw new Error(`Invalid section: ${section}`);
 
       if (section === "keyPersonnel") {
         // Update existing personnel
@@ -325,14 +394,16 @@ const Team = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               name: person.name,
               role: person.role,
               department: person.department,
               status: person.status,
               contact: person.contact,
+              available: person.available || "Full Day",
             })
-            .eq("id", person.id);
+            .eq("id", person.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new personnel
@@ -340,12 +411,13 @@ const Team = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               name: newPersonnel.name,
               role: newPersonnel.role,
               department: newPersonnel.department || "Unknown",
               status: newPersonnel.status || "On Set",
               contact: newPersonnel.contact || "",
+              available: newPersonnel.available || "Full Day",
             })
             .select("id")
             .single();
@@ -367,14 +439,15 @@ const Team = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               name: dept.name,
               head_count: dept.headCount,
               lead: dept.lead,
               budget: budgetNum,
               status: dept.status,
             })
-            .eq("id", dept.id);
+            .eq("id", dept.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new department
@@ -386,7 +459,7 @@ const Team = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               name: newDepartment.name,
               head_count: newDepartment.headCount || 0,
               lead: newDepartment.lead,
@@ -414,14 +487,15 @@ const Team = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               date: record.date.toISOString().split("T")[0],
               present: record.present,
               absent: record.absent,
               late: record.late,
               total: record.total,
             })
-            .eq("id", record.id);
+            .eq("id", record.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new attendance record
@@ -429,7 +503,7 @@ const Team = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               date: newAttendance.date.toISOString().split("T")[0],
               present: newAttendance.present || 0,
               absent: newAttendance.absent || 0,
@@ -456,13 +530,14 @@ const Team = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               category: payment.category,
               amount: amountNum,
               status: payment.status,
               due_date: payment.date.toISOString().split("T")[0],
             })
-            .eq("id", payment.id);
+            .eq("id", payment.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new payroll record
@@ -474,7 +549,7 @@ const Team = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               category: newPayroll.category,
               amount: amountNum,
               status: newPayroll.status || "Pending",
@@ -497,13 +572,20 @@ const Team = () => {
         }
       }
 
+      console.log(`${section} saved successfully`);
+      setRefreshKey((prev) => prev + 1);
       setEditMode({ ...editMode, [section]: false });
       alert("Changes saved successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Save ${section} error:`, error);
-      alert(
-        `Failed to save changes for ${section}. Check console for details.`
-      );
+      if (table && error.message.includes("Could not find the table")) {
+        setError(
+          `The '${table}' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor.`
+        );
+      } else {
+        setError(`Failed to save changes for ${section}: ${error.message}`);
+      }
+      alert(`Failed to save changes for ${section}: ${error.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -524,6 +606,7 @@ const Team = () => {
           status: newPersonnel.status || "On Set",
           department: newPersonnel.department || "Unknown",
           contact: newPersonnel.contact || "",
+          available: newPersonnel.available || "Full Day",
         } as KeyPersonnel,
       ]);
       setNewPersonnel({});
@@ -578,7 +661,7 @@ const Team = () => {
   };
 
   // Handle deleting items
-  const handleDelete = async (section: Section, id: number) => {
+  const handleDelete = async (section: Section, id: string) => {
     if (
       !window.confirm(
         `Are you sure you want to delete this ${section.slice(0, -1)}?`
@@ -587,10 +670,14 @@ const Team = () => {
       return;
     }
     try {
+      console.log(`Deleting ${section} with ID:`, id);
       const table = tableMap[section];
-      const { error } = await supabase.from(table).delete().eq("id", id);
+      const { error } = await supabase
+        .from(table)
+        .delete()
+        .eq("id", id)
+        .eq("project_id", selectedProjectId);
       if (error) throw error;
-
       if (section === "keyPersonnel") {
         setKeyPersonnel(keyPersonnel.filter((p) => p.id !== id));
       } else if (section === "departments") {
@@ -601,11 +688,10 @@ const Team = () => {
         setPayroll(payroll.filter((p) => p.id !== id));
       }
       alert(`${section.slice(0, -1)} deleted successfully!`);
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Delete ${section} error:`, error);
-      alert(
-        `Failed to delete ${section.slice(0, -1)}. Check console for details.`
-      );
+      setError(`Failed to delete ${section.slice(0, -1)}: ${error.message}`);
+      alert(`Failed to delete ${section.slice(0, -1)}: ${error.message}`);
     }
   };
 
@@ -621,7 +707,19 @@ const Team = () => {
       setNewPayroll({});
     }
     setEditMode({ ...editMode, [section]: false });
+    setRefreshKey((prev) => prev + 1);
   };
+
+  // Render loading or error states
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
+  if (!selectedProjectId) {
+    return <div>Please select a project from the sidebar.</div>;
+  }
 
   return (
     <ErrorBoundary>
@@ -647,7 +745,6 @@ const Team = () => {
                 </div>
               </div>
             </header>
-
             <div className="p-6 space-y-6">
               {/* Key Personnel */}
               <DashboardCard title="Key Personnel" icon={UserCheck}>
@@ -661,7 +758,7 @@ const Team = () => {
                           : setEditMode({ ...editMode, keyPersonnel: true })
                       }
                       className="flex-1"
-                      disabled={isSaving}
+                      disabled={isSaving || isSubmitting}
                     >
                       <Edit2 className="h-4 w-4 mr-2" />
                       {editMode.keyPersonnel ? "Cancel Edit" : "Edit Personnel"}
@@ -671,7 +768,9 @@ const Team = () => {
                       onClick={() =>
                         editMode.keyPersonnel && handleAdd("keyPersonnel")
                       }
-                      disabled={!editMode.keyPersonnel || isSaving}
+                      disabled={
+                        !editMode.keyPersonnel || isSaving || isSubmitting
+                      }
                       className="flex-1"
                     >
                       <Plus className="h-4 w-4 mr-2" />
@@ -737,112 +836,149 @@ const Team = () => {
                         }
                         className="mb-2"
                       />
+                      <select
+                        value={newPersonnel.available || "Full Day"}
+                        onChange={(e) =>
+                          setNewPersonnel({
+                            ...newPersonnel,
+                            available: e.target.value,
+                          })
+                        }
+                        className="w-full p-2 border border-input rounded-md mb-2"
+                      >
+                        <option value="Full Day">Full Day</option>
+                        <option value="Half Day">Half Day</option>
+                        <option value="Not Available">Not Available</option>
+                      </select>
                     </div>
                   )}
-                  {keyPersonnel.map((person, idx) => (
-                    <div
-                      key={person.id || idx}
-                      className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
-                    >
-                      {editMode.keyPersonnel ? (
-                        <>
-                          <div className="flex-1 space-y-2 mr-2">
-                            <Input
-                              value={person.name}
-                              onChange={(e) => {
-                                const newPersonnel = [...keyPersonnel];
-                                newPersonnel[idx].name = e.target.value;
-                                setKeyPersonnel(newPersonnel);
-                              }}
-                              className="mb-2"
-                            />
-                            <Input
-                              value={person.role}
-                              onChange={(e) => {
-                                const newPersonnel = [...keyPersonnel];
-                                newPersonnel[idx].role = e.target.value;
-                                setKeyPersonnel(newPersonnel);
-                              }}
-                              className="mb-2"
-                            />
-                            <Input
-                              value={person.department}
-                              onChange={(e) => {
-                                const newPersonnel = [...keyPersonnel];
-                                newPersonnel[idx].department = e.target.value;
-                                setKeyPersonnel(newPersonnel);
-                              }}
-                              className="mb-2"
-                            />
-                            <select
-                              value={person.status}
-                              onChange={(e) => {
-                                const newPersonnel = [...keyPersonnel];
-                                newPersonnel[idx].status = e.target.value;
-                                setKeyPersonnel(newPersonnel);
-                              }}
-                              className="w-full p-2 border border-input rounded-md mb-2"
-                            >
-                              <option value="On Set">On Set</option>
-                              <option value="Post-Production">
-                                Post-Production
-                              </option>
-                            </select>
-                            <Input
-                              value={person.contact}
-                              onChange={(e) => {
-                                const newPersonnel = [...keyPersonnel];
-                                newPersonnel[idx].contact = e.target.value;
-                                setKeyPersonnel(newPersonnel);
-                              }}
-                              className="mb-2"
-                            />
-                          </div>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() =>
-                              handleDelete("keyPersonnel", person.id!)
-                            }
-                            disabled={isSaving}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex items-center gap-3">
-                            <Avatar>
-                              <AvatarFallback className="bg-primary text-primary-foreground">
-                                {getInitials(person.name)}
-                              </AvatarFallback>
-                            </Avatar>
-                            <div>
-                              <p className="font-medium text-sm">
-                                {person.name}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {person.role} • {person.department}
-                              </p>
+                  {keyPersonnel.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No personnel added yet. Click "Edit Personnel" to add one.
+                    </p>
+                  ) : (
+                    keyPersonnel.map((person, idx) => (
+                      <div
+                        key={person.id || idx}
+                        className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
+                      >
+                        {editMode.keyPersonnel ? (
+                          <>
+                            <div className="flex-1 space-y-2 mr-2">
+                              <Input
+                                value={person.name}
+                                onChange={(e) => {
+                                  const newPersonnel = [...keyPersonnel];
+                                  newPersonnel[idx].name = e.target.value;
+                                  setKeyPersonnel(newPersonnel);
+                                }}
+                                className="mb-2"
+                              />
+                              <Input
+                                value={person.role}
+                                onChange={(e) => {
+                                  const newPersonnel = [...keyPersonnel];
+                                  newPersonnel[idx].role = e.target.value;
+                                  setKeyPersonnel(newPersonnel);
+                                }}
+                                className="mb-2"
+                              />
+                              <Input
+                                value={person.department}
+                                onChange={(e) => {
+                                  const newPersonnel = [...keyPersonnel];
+                                  newPersonnel[idx].department = e.target.value;
+                                  setKeyPersonnel(newPersonnel);
+                                }}
+                                className="mb-2"
+                              />
+                              <select
+                                value={person.status}
+                                onChange={(e) => {
+                                  const newPersonnel = [...keyPersonnel];
+                                  newPersonnel[idx].status = e.target.value;
+                                  setKeyPersonnel(newPersonnel);
+                                }}
+                                className="w-full p-2 border border-input rounded-md mb-2"
+                              >
+                                <option value="On Set">On Set</option>
+                                <option value="Post-Production">
+                                  Post-Production
+                                </option>
+                              </select>
+                              <Input
+                                value={person.contact}
+                                onChange={(e) => {
+                                  const newPersonnel = [...keyPersonnel];
+                                  newPersonnel[idx].contact = e.target.value;
+                                  setKeyPersonnel(newPersonnel);
+                                }}
+                                className="mb-2"
+                              />
+                              <select
+                                value={person.available}
+                                onChange={(e) => {
+                                  const newPersonnel = [...keyPersonnel];
+                                  newPersonnel[idx].available = e.target.value;
+                                  setKeyPersonnel(newPersonnel);
+                                }}
+                                className="w-full p-2 border border-input rounded-md mb-2"
+                              >
+                                <option value="Full Day">Full Day</option>
+                                <option value="Half Day">Half Day</option>
+                                <option value="Not Available">
+                                  Not Available
+                                </option>
+                              </select>
                             </div>
-                          </div>
-                          <Badge
-                            variant={
-                              person.status === "On Set" ? "default" : "outline"
-                            }
-                            className="text-xs"
-                          >
-                            {person.status}
-                          </Badge>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() =>
+                                handleDelete("keyPersonnel", person.id!)
+                              }
+                              disabled={isSaving || isSubmitting || !person.id}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-3">
+                              <Avatar>
+                                <AvatarFallback className="bg-primary text-primary-foreground">
+                                  {getInitials(person.name)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <div>
+                                <p className="font-medium text-sm">
+                                  {person.name}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {person.role} • {person.department}
+                                </p>
+                              </div>
+                            </div>
+                            <Badge
+                              variant={
+                                person.status === "On Set"
+                                  ? "default"
+                                  : "outline"
+                              }
+                              className="text-xs"
+                            >
+                              {person.status}
+                            </Badge>
+                          </>
+                        )}
+                      </div>
+                    ))
+                  )}
                   {editMode.keyPersonnel && (
                     <Button
                       variant="default"
                       onClick={() => handleSave("keyPersonnel")}
-                      disabled={isSaving}
+                      disabled={isSaving || isSubmitting}
                       className="mt-3"
                     >
                       <Save className="h-4 w-4 mr-2" />
@@ -864,7 +1000,7 @@ const Team = () => {
                           : setEditMode({ ...editMode, departments: true })
                       }
                       className="flex-1"
-                      disabled={isSaving}
+                      disabled={isSaving || isSubmitting}
                     >
                       <Edit2 className="h-4 w-4 mr-2" />
                       {editMode.departments
@@ -876,7 +1012,9 @@ const Team = () => {
                       onClick={() =>
                         editMode.departments && handleAdd("departments")
                       }
-                      disabled={!editMode.departments || isSaving}
+                      disabled={
+                        !editMode.departments || isSaving || isSubmitting
+                      }
                       className="flex-1"
                     >
                       <Plus className="h-4 w-4 mr-2" />
@@ -909,7 +1047,11 @@ const Team = () => {
                       />
                       <Input
                         placeholder="Head Count"
-                        value={newDepartment.headCount || ""}
+                        value={
+                          newDepartment.headCount !== undefined
+                            ? newDepartment.headCount
+                            : ""
+                        }
                         onChange={(e) =>
                           setNewDepartment({
                             ...newDepartment,
@@ -945,114 +1087,125 @@ const Team = () => {
                       </select>
                     </div>
                   )}
-                  {departments.map((dept, idx) => (
-                    <div
-                      key={dept.id || idx}
-                      className="p-3 bg-secondary/20 rounded-lg"
-                    >
-                      {editMode.departments ? (
-                        <>
-                          <div className="flex justify-between items-center mb-2">
+                  {departments.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No departments added yet. Click "Edit Departments" to add
+                      one.
+                    </p>
+                  ) : (
+                    departments.map((dept, idx) => (
+                      <div
+                        key={dept.id || idx}
+                        className="p-3 bg-secondary/20 rounded-lg"
+                      >
+                        {editMode.departments ? (
+                          <>
+                            <div className="flex justify-between items-center mb-2">
+                              <Input
+                                value={dept.name}
+                                onChange={(e) => {
+                                  const newDepts = [...departments];
+                                  newDepts[idx].name = e.target.value;
+                                  setDepartments(newDepts);
+                                }}
+                                className="flex-1 mr-2"
+                              />
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() =>
+                                  handleDelete("departments", dept.id!)
+                                }
+                                disabled={isSaving || isSubmitting || !dept.id}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
                             <Input
-                              value={dept.name}
+                              value={dept.lead}
                               onChange={(e) => {
                                 const newDepts = [...departments];
-                                newDepts[idx].name = e.target.value;
+                                newDepts[idx].lead = e.target.value;
                                 setDepartments(newDepts);
                               }}
-                              className="flex-1 mr-2"
+                              className="mb-2"
                             />
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() =>
-                                handleDelete("departments", dept.id!)
-                              }
-                              disabled={isSaving}
+                            <Input
+                              value={dept.headCount}
+                              onChange={(e) => {
+                                const newDepts = [...departments];
+                                newDepts[idx].headCount =
+                                  parseInt(e.target.value) || 0;
+                                setDepartments(newDepts);
+                              }}
+                              type="number"
+                              className="mb-2"
+                            />
+                            <Input
+                              value={dept.budget}
+                              onChange={(e) => {
+                                const newDepts = [...departments];
+                                newDepts[idx].budget = e.target.value;
+                                setDepartments(newDepts);
+                              }}
+                              className="mb-2"
+                            />
+                            <select
+                              value={dept.status}
+                              onChange={(e) => {
+                                const newDepts = [...departments];
+                                newDepts[idx].status = e.target.value;
+                                setDepartments(newDepts);
+                              }}
+                              className="w-full p-2 border border-input rounded-md mb-2"
                             >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                          <Input
-                            value={dept.lead}
-                            onChange={(e) => {
-                              const newDepts = [...departments];
-                              newDepts[idx].lead = e.target.value;
-                              setDepartments(newDepts);
-                            }}
-                            className="mb-2"
-                          />
-                          <Input
-                            value={dept.headCount}
-                            onChange={(e) => {
-                              const newDepts = [...departments];
-                              newDepts[idx].headCount =
-                                parseInt(e.target.value) || 0;
-                              setDepartments(newDepts);
-                            }}
-                            type="number"
-                            className="mb-2"
-                          />
-                          <Input
-                            value={dept.budget}
-                            onChange={(e) => {
-                              const newDepts = [...departments];
-                              newDepts[idx].budget = e.target.value;
-                              setDepartments(newDepts);
-                            }}
-                            className="mb-2"
-                          />
-                          <select
-                            value={dept.status}
-                            onChange={(e) => {
-                              const newDepts = [...departments];
-                              newDepts[idx].status = e.target.value;
-                              setDepartments(newDepts);
-                            }}
-                            className="w-full p-2 border border-input rounded-md mb-2"
-                          >
-                            <option value="Active">Active</option>
-                            <option value="Post-Production">
-                              Post-Production
-                            </option>
-                          </select>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex items-center justify-between mb-2">
-                            <div>
-                              <p className="font-medium text-sm">{dept.name}</p>
-                              <p className="text-xs text-muted-foreground">
-                                Lead: {dept.lead}
-                              </p>
+                              <option value="Active">Active</option>
+                              <option value="Post-Production">
+                                Post-Production
+                              </option>
+                            </select>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center justify-between mb-2">
+                              <div>
+                                <p className="font-medium text-sm">
+                                  {dept.name}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  Lead: {dept.lead}
+                                </p>
+                              </div>
+                              <Badge variant="outline" className="text-xs">
+                                {dept.status}
+                              </Badge>
                             </div>
-                            <Badge variant="outline" className="text-xs">
-                              {dept.status}
-                            </Badge>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div>
-                              <p className="text-muted-foreground">Team Size</p>
-                              <p className="font-bold">
-                                {dept.headCount} members
-                              </p>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div>
+                                <p className="text-muted-foreground">
+                                  Team Size
+                                </p>
+                                <p className="font-bold">
+                                  {dept.headCount} members
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground">
+                                  Department Budget
+                                </p>
+                                <p className="font-bold">{dept.budget}</p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="text-muted-foreground">
-                                Department Budget
-                              </p>
-                              <p className="font-bold">{dept.budget}</p>
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                          </>
+                        )}
+                      </div>
+                    ))
+                  )}
                   {editMode.departments && (
                     <Button
                       variant="default"
                       onClick={() => handleSave("departments")}
-                      disabled={isSaving}
+                      disabled={isSaving || isSubmitting}
                       className="mt-3"
                     >
                       <Save className="h-4 w-4 mr-2" />
@@ -1074,7 +1227,7 @@ const Team = () => {
                           : setEditMode({ ...editMode, attendance: true })
                       }
                       className="flex-1"
-                      disabled={isSaving}
+                      disabled={isSaving || isSubmitting}
                     >
                       <Edit2 className="h-4 w-4 mr-2" />
                       {editMode.attendance ? "Cancel Edit" : "Edit Attendance"}
@@ -1084,7 +1237,9 @@ const Team = () => {
                       onClick={() =>
                         editMode.attendance && handleAdd("attendance")
                       }
-                      disabled={!editMode.attendance || isSaving}
+                      disabled={
+                        !editMode.attendance || isSaving || isSubmitting
+                      }
                       className="flex-1"
                     >
                       <Plus className="h-4 w-4 mr-2" />
@@ -1106,7 +1261,11 @@ const Team = () => {
                       />
                       <Input
                         placeholder="Present"
-                        value={newAttendance.present || ""}
+                        value={
+                          newAttendance.present !== undefined
+                            ? newAttendance.present
+                            : ""
+                        }
                         onChange={(e) =>
                           setNewAttendance({
                             ...newAttendance,
@@ -1118,7 +1277,11 @@ const Team = () => {
                       />
                       <Input
                         placeholder="Absent"
-                        value={newAttendance.absent || ""}
+                        value={
+                          newAttendance.absent !== undefined
+                            ? newAttendance.absent
+                            : ""
+                        }
                         onChange={(e) =>
                           setNewAttendance({
                             ...newAttendance,
@@ -1130,7 +1293,11 @@ const Team = () => {
                       />
                       <Input
                         placeholder="Late"
-                        value={newAttendance.late || ""}
+                        value={
+                          newAttendance.late !== undefined
+                            ? newAttendance.late
+                            : ""
+                        }
                         onChange={(e) =>
                           setNewAttendance({
                             ...newAttendance,
@@ -1142,7 +1309,11 @@ const Team = () => {
                       />
                       <Input
                         placeholder="Total"
-                        value={newAttendance.total || ""}
+                        value={
+                          newAttendance.total !== undefined
+                            ? newAttendance.total
+                            : ""
+                        }
                         onChange={(e) =>
                           setNewAttendance({
                             ...newAttendance,
@@ -1154,127 +1325,136 @@ const Team = () => {
                       />
                     </div>
                   )}
-                  {attendance.map((record, idx) => (
-                    <div
-                      key={record.id || idx}
-                      className="p-3 bg-secondary/20 rounded-lg"
-                    >
-                      {editMode.attendance ? (
-                        <>
-                          <div className="flex justify-between items-center mb-2">
-                            <DatePicker
-                              selected={record.date}
-                              onChange={(date: Date) => {
-                                const newRecords = [...attendance];
-                                newRecords[idx].date = date;
-                                setAttendance(newRecords);
-                              }}
-                              dateFormat="dd MMM yyyy"
-                              placeholderText="Select Date"
-                              customInput={
-                                <Input className="w-full bg-card border border-border text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary mb-2 flex-1 mr-2" />
-                              }
-                            />
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() =>
-                                handleDelete("attendance", record.id!)
-                              }
-                              disabled={isSaving}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2">
-                            <Input
-                              value={record.present}
-                              onChange={(e) => {
-                                const newRecords = [...attendance];
-                                newRecords[idx].present =
-                                  parseInt(e.target.value) || 0;
-                                setAttendance(newRecords);
-                              }}
-                              type="number"
-                              className="mb-2"
-                            />
-                            <Input
-                              value={record.absent}
-                              onChange={(e) => {
-                                const newRecords = [...attendance];
-                                newRecords[idx].absent =
-                                  parseInt(e.target.value) || 0;
-                                setAttendance(newRecords);
-                              }}
-                              type="number"
-                              className="mb-2"
-                            />
-                            <Input
-                              value={record.late}
-                              onChange={(e) => {
-                                const newRecords = [...attendance];
-                                newRecords[idx].late =
-                                  parseInt(e.target.value) || 0;
-                                setAttendance(newRecords);
-                              }}
-                              type="number"
-                              className="mb-2"
-                            />
-                            <Input
-                              value={record.total}
-                              onChange={(e) => {
-                                const newRecords = [...attendance];
-                                newRecords[idx].total =
-                                  parseInt(e.target.value) || 0;
-                                setAttendance(newRecords);
-                              }}
-                              type="number"
-                              className="mb-2"
-                            />
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <p className="font-medium text-sm mb-2">
-                            {record.date.toLocaleDateString("en-GB", {
-                              month: "short",
-                              day: "numeric",
-                              year: "numeric",
-                            })}
-                          </p>
-                          <div className="grid grid-cols-4 gap-2 text-xs">
-                            <div>
-                              <p className="text-muted-foreground">Present</p>
-                              <p className="font-bold text-primary">
-                                {record.present}
-                              </p>
+                  {attendance.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No attendance records added yet. Click "Edit Attendance"
+                      to add one.
+                    </p>
+                  ) : (
+                    attendance.map((record, idx) => (
+                      <div
+                        key={record.id || idx}
+                        className="p-3 bg-secondary/20 rounded-lg"
+                      >
+                        {editMode.attendance ? (
+                          <>
+                            <div className="flex justify-between items-center mb-2">
+                              <DatePicker
+                                selected={record.date}
+                                onChange={(date: Date) => {
+                                  const newRecords = [...attendance];
+                                  newRecords[idx].date = date;
+                                  setAttendance(newRecords);
+                                }}
+                                dateFormat="dd MMM yyyy"
+                                placeholderText="Select Date"
+                                customInput={
+                                  <Input className="w-full bg-card border border-border text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary mb-2 flex-1 mr-2" />
+                                }
+                              />
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() =>
+                                  handleDelete("attendance", record.id!)
+                                }
+                                disabled={
+                                  isSaving || isSubmitting || !record.id
+                                }
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
                             </div>
-                            <div>
-                              <p className="text-muted-foreground">Absent</p>
-                              <p className="font-bold text-destructive">
-                                {record.absent}
-                              </p>
+                            <div className="grid grid-cols-2 gap-2">
+                              <Input
+                                value={record.present}
+                                onChange={(e) => {
+                                  const newRecords = [...attendance];
+                                  newRecords[idx].present =
+                                    parseInt(e.target.value) || 0;
+                                  setAttendance(newRecords);
+                                }}
+                                type="number"
+                                className="mb-2"
+                              />
+                              <Input
+                                value={record.absent}
+                                onChange={(e) => {
+                                  const newRecords = [...attendance];
+                                  newRecords[idx].absent =
+                                    parseInt(e.target.value) || 0;
+                                  setAttendance(newRecords);
+                                }}
+                                type="number"
+                                className="mb-2"
+                              />
+                              <Input
+                                value={record.late}
+                                onChange={(e) => {
+                                  const newRecords = [...attendance];
+                                  newRecords[idx].late =
+                                    parseInt(e.target.value) || 0;
+                                  setAttendance(newRecords);
+                                }}
+                                type="number"
+                                className="mb-2"
+                              />
+                              <Input
+                                value={record.total}
+                                onChange={(e) => {
+                                  const newRecords = [...attendance];
+                                  newRecords[idx].total =
+                                    parseInt(e.target.value) || 0;
+                                  setAttendance(newRecords);
+                                }}
+                                type="number"
+                                className="mb-2"
+                              />
                             </div>
-                            <div>
-                              <p className="text-muted-foreground">Late</p>
-                              <p className="font-bold text-secondary">
-                                {record.late}
-                              </p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="font-medium text-sm mb-2">
+                              {record.date.toLocaleDateString("en-GB", {
+                                month: "short",
+                                day: "numeric",
+                                year: "numeric",
+                              })}
+                            </p>
+                            <div className="grid grid-cols-4 gap-2 text-xs">
+                              <div>
+                                <p className="text-muted-foreground">Present</p>
+                                <p className="font-bold text-primary">
+                                  {record.present}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground">Absent</p>
+                                <p className="font-bold text-destructive">
+                                  {record.absent}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground">Late</p>
+                                <p className="font-bold text-secondary">
+                                  {record.late}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground">Total</p>
+                                <p className="font-bold">{record.total}</p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="text-muted-foreground">Total</p>
-                              <p className="font-bold">{record.total}</p>
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                          </>
+                        )}
+                      </div>
+                    ))
+                  )}
                   {editMode.attendance && (
                     <Button
                       variant="default"
                       onClick={() => handleSave("attendance")}
-                      disabled={isSaving}
+                      disabled={isSaving || isSubmitting}
                       className="mt-3"
                     >
                       <Save className="h-4 w-4 mr-2" />
@@ -1296,7 +1476,7 @@ const Team = () => {
                           : setEditMode({ ...editMode, payroll: true })
                       }
                       className="flex-1"
-                      disabled={isSaving}
+                      disabled={isSaving || isSubmitting}
                     >
                       <Edit2 className="h-4 w-4 mr-2" />
                       {editMode.payroll ? "Cancel Edit" : "Edit Payroll"}
@@ -1304,7 +1484,7 @@ const Team = () => {
                     <Button
                       variant="outline"
                       onClick={() => editMode.payroll && handleAdd("payroll")}
-                      disabled={!editMode.payroll || isSaving}
+                      disabled={!editMode.payroll || isSaving || isSubmitting}
                       className="flex-1"
                     >
                       <Plus className="h-4 w-4 mr-2" />
@@ -1361,105 +1541,114 @@ const Team = () => {
                       />
                     </div>
                   )}
-                  {payroll.map((payment, idx) => (
-                    <div
-                      key={payment.id || idx}
-                      className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
-                    >
-                      {editMode.payroll ? (
-                        <>
-                          <div className="flex-1 space-y-2 mr-2">
-                            <Input
-                              value={payment.category}
-                              onChange={(e) => {
-                                const newPayrollList = [...payroll];
-                                newPayrollList[idx].category = e.target.value;
-                                setPayroll(newPayrollList);
-                              }}
-                              className="mb-2"
-                            />
-                            <Input
-                              value={payment.amount}
-                              onChange={(e) => {
-                                const newPayrollList = [...payroll];
-                                newPayrollList[idx].amount = e.target.value;
-                                setPayroll(newPayrollList);
-                              }}
-                              className="mb-2"
-                            />
-                            <select
-                              value={payment.status}
-                              onChange={(e) => {
-                                const newPayrollList = [...payroll];
-                                newPayrollList[idx].status = e.target.value;
-                                setPayroll(newPayrollList);
-                              }}
-                              className="w-full p-2 border border-input rounded-md mb-2"
-                            >
-                              <option value="Processed">Processed</option>
-                              <option value="Pending">Pending</option>
-                            </select>
-                            <DatePicker
-                              selected={payment.date}
-                              onChange={(date: Date) => {
-                                const newPayrollList = [...payroll];
-                                newPayrollList[idx].date = date;
-                                setPayroll(newPayrollList);
-                              }}
-                              dateFormat="dd MMM yyyy"
-                              placeholderText="Select Due Date"
-                              customInput={
-                                <Input className="w-full bg-card border border-border text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary mb-2" />
+                  {payroll.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No payroll records added yet. Click "Edit Payroll" to add
+                      one.
+                    </p>
+                  ) : (
+                    payroll.map((payment, idx) => (
+                      <div
+                        key={payment.id || idx}
+                        className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
+                      >
+                        {editMode.payroll ? (
+                          <>
+                            <div className="flex-1 space-y-2 mr-2">
+                              <Input
+                                value={payment.category}
+                                onChange={(e) => {
+                                  const newPayrollList = [...payroll];
+                                  newPayrollList[idx].category = e.target.value;
+                                  setPayroll(newPayrollList);
+                                }}
+                                className="mb-2"
+                              />
+                              <Input
+                                value={payment.amount}
+                                onChange={(e) => {
+                                  const newPayrollList = [...payroll];
+                                  newPayrollList[idx].amount = e.target.value;
+                                  setPayroll(newPayrollList);
+                                }}
+                                className="mb-2"
+                              />
+                              <select
+                                value={payment.status}
+                                onChange={(e) => {
+                                  const newPayrollList = [...payroll];
+                                  newPayrollList[idx].status = e.target.value;
+                                  setPayroll(newPayrollList);
+                                }}
+                                className="w-full p-2 border border-input rounded-md mb-2"
+                              >
+                                <option value="Processed">Processed</option>
+                                <option value="Pending">Pending</option>
+                              </select>
+                              <DatePicker
+                                selected={payment.date}
+                                onChange={(date: Date) => {
+                                  const newPayrollList = [...payroll];
+                                  newPayrollList[idx].date = date;
+                                  setPayroll(newPayrollList);
+                                }}
+                                dateFormat="dd MMM yyyy"
+                                placeholderText="Select Due Date"
+                                customInput={
+                                  <Input className="w-full bg-card border border-border text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary mb-2" />
+                                }
+                              />
+                            </div>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() =>
+                                handleDelete("payroll", payment.id!)
                               }
-                            />
-                          </div>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => handleDelete("payroll", payment.id!)}
-                            disabled={isSaving}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          <div>
-                            <p className="font-medium text-sm">
-                              {payment.category}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              Due:{" "}
-                              {payment.date.toLocaleDateString("en-GB", {
-                                day: "2-digit",
-                                month: "short",
-                              })}
-                            </p>
-                          </div>
-                          <div className="text-right">
-                            <p className="font-bold text-sm">
-                              {payment.amount}
-                            </p>
-                            <Badge
-                              variant={
-                                payment.status === "Processed"
-                                  ? "default"
-                                  : "outline"
-                              }
-                              className="text-xs mt-1"
+                              disabled={isSaving || isSubmitting || !payment.id}
                             >
-                              {payment.status}
-                            </Badge>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <div>
+                              <p className="font-medium text-sm">
+                                {payment.category}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                Due:{" "}
+                                {payment.date.toLocaleDateString("en-GB", {
+                                  day: "2-digit",
+                                  month: "short",
+                                })}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-bold text-sm">
+                                {payment.amount}
+                              </p>
+                              <Badge
+                                variant={
+                                  payment.status === "Processed"
+                                    ? "default"
+                                    : "outline"
+                                }
+                                className="text-xs mt-1"
+                              >
+                                {payment.status}
+                              </Badge>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))
+                  )}
                   {editMode.payroll && (
                     <Button
                       variant="default"
                       onClick={() => handleSave("payroll")}
-                      disabled={isSaving}
+                      disabled={isSaving || isSubmitting}
                       className="mt-3"
                     >
                       <Save className="h-4 w-4 mr-2" />

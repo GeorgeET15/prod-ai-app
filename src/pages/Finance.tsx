@@ -57,7 +57,6 @@ interface Expense {
   item: string;
   amount: string;
   date: Date;
-  category: string;
   status: string;
   delay?: string;
 }
@@ -65,10 +64,8 @@ interface Expense {
 interface Vendor {
   id?: number;
   name: string;
-  pending: string;
-  paid: string;
+  amount: string;
   status: string;
-  ids: number[];
 }
 
 interface FinancialOverview {
@@ -109,157 +106,216 @@ const Finance = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Fetch data from Supabase
+  // Fetch projects and set selectedProjectId from local storage
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchProjects = async () => {
       try {
-        // Fetch projects for the sidebar
+        setLoading(true);
+        setError(null);
         const { data: projectsData, error: projectsError } = await supabase
           .from("projects")
           .select("id, name");
         if (projectsError) {
           console.error("Projects fetch error:", projectsError);
-        } else {
-          setProjects(projectsData || []);
-          // Set the selected project ID (e.g., for "Pranayam Oru Thudakkam")
-          const selectedProject = projectsData?.find(
-            (p) => p.name === "Pranayam Oru Thudakkam"
-          );
-          if (selectedProject) {
-            setSelectedProjectId(selectedProject.id);
-          }
+          setError("Failed to fetch projects.");
+          return;
         }
+        setProjects(projectsData || []);
 
-        // Fetch project data for total budget
+        // Get selectedProjectId from local storage
+        const storedProjectId = localStorage.getItem("selectedProjectId");
+        if (
+          storedProjectId &&
+          projectsData?.some((p) => p.id === storedProjectId)
+        ) {
+          setSelectedProjectId(storedProjectId);
+        } else if (projectsData?.length > 0) {
+          // Fallback to first project if no valid stored ID
+          setSelectedProjectId(projectsData[0].id);
+          localStorage.setItem("selectedProjectId", projectsData[0].id);
+        } else {
+          setError("No projects available.");
+        }
+      } catch (err) {
+        console.error("Fetch projects error:", err);
+        setError("An unexpected error occurred while fetching projects.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchProjects();
+  }, []);
+
+  // Listen for localStorage changes to selectedProjectId
+  useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === "selectedProjectId") {
+        const newProjectId = event.newValue || "";
+        if (newProjectId && projects.some((p) => p.id === newProjectId)) {
+          setSelectedProjectId(newProjectId);
+        } else {
+          setSelectedProjectId("");
+          setError("Selected project is invalid or not found.");
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, [projects]);
+
+  // Fetch project data when selectedProjectId or refreshKey changes
+  useEffect(() => {
+    const fetchProjectData = async () => {
+      if (!selectedProjectId) {
+        setError("No project selected.");
+        setBudgetBreakdown([]);
+        setExpenses([]);
+        setVendors([]);
+        setFinancialOverview({ totalBudget: 0, totalSpent: 0, remaining: 0 });
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        // Fetch project details
         const { data: project, error: projectError } = await supabase
           .from("projects")
           .select("id, total_budget")
-          .eq("name", "Pranayam Oru Thudakkam")
-          .single();
+          .eq("id", selectedProjectId)
+          .maybeSingle();
         if (projectError) {
           console.error("Project fetch error:", projectError);
-        } else {
-          const totalBudget = project.total_budget;
-          setFinancialOverview({ totalBudget, totalSpent: 0, remaining: 0 });
-
-          const projectId = project.id;
-
-          // Budget Breakdown
-          const { data: budgets, error: budgetError } = await supabase
-            .from("budgets")
-            .select("id, department, allocated, spent")
-            .eq("project_id", projectId);
-          if (budgetError) console.error("Budgets fetch error:", budgetError);
-          else {
-            const budgetList: Budget[] =
-              budgets?.map((budget) => ({
-                id: budget.id,
-                category: budget.department,
-                allocated: `₹${(budget.allocated / 100000).toFixed(1)}L`,
-                spent: `₹${(budget.spent / 100000).toFixed(1)}L`,
-                progress:
-                  Math.round((budget.spent / budget.allocated) * 100) || 0,
-                status:
-                  budget.spent >= budget.allocated
-                    ? "Completed"
-                    : budget.spent / budget.allocated > 0.8
-                    ? "On Track"
-                    : "In Progress",
-              })) || [];
-            setBudgetBreakdown(budgetList);
-            const totalSpent = budgets.reduce((sum, b) => sum + b.spent, 0);
-            const remaining = budgets.reduce(
-              (sum, b) => sum + (b.allocated - b.spent),
-              0
-            );
-            setFinancialOverview((prev) => ({
-              ...prev,
-              totalSpent,
-              remaining,
-            }));
-          }
-
-          // Recent Expenses
-          const { data: invoices, error: invoiceError } = await supabase
-            .from("invoices")
-            .select("id, vendor, amount, due_date, status, delay_days")
-            .eq("project_id", projectId)
-            .order("due_date", { ascending: false })
-            .limit(4);
-          if (invoiceError)
-            console.error("Invoices fetch error:", invoiceError);
-          else {
-            setExpenses(
-              invoices?.map((invoice) => ({
-                id: invoice.id,
-                item: `${invoice.vendor} - ${new Date(
-                  invoice.due_date
-                ).toLocaleDateString("en-GB", {
-                  month: "short",
-                  day: "numeric",
-                })}`,
-                amount: `₹${(invoice.amount / 100000).toFixed(1)}L`,
-                date: new Date(invoice.due_date),
-                category:
-                  budgets[Math.floor(Math.random() * budgets.length)]
-                    ?.department || "Unknown",
-                status: invoice.status === "Paid" ? "Approved" : "Pending",
-                delay: invoice.delay_days
-                  ? `${invoice.delay_days} days`
-                  : undefined,
-              })) || []
-            );
-          }
-
-          // Vendor Payments
-          const { data: vendorData, error: vendorError } = await supabase
-            .from("invoices")
-            .select("id, vendor, amount, status")
-            .eq("project_id", projectId)
-            .order("vendor");
-          if (vendorError) console.error("Vendor fetch error:", vendorError);
-          else {
-            const vendorMap = new Map<
-              string,
-              { paid: number; pending: number; ids: number[] }
-            >();
-            vendorData.forEach((invoice) => {
-              const vendor = invoice.vendor;
-              if (!vendorMap.has(vendor)) {
-                vendorMap.set(vendor, { paid: 0, pending: 0, ids: [] });
-              }
-              const entry = vendorMap.get(vendor)!;
-              entry.ids.push(invoice.id);
-              if (invoice.status === "Paid") {
-                entry.paid += invoice.amount;
-              } else {
-                entry.pending += invoice.amount;
-              }
-            });
-            const vendorList: Vendor[] = Array.from(vendorMap.entries())
-              .map(([name, amounts]) => ({
-                name,
-                pending: `₹${(amounts.pending / 100000).toFixed(1)}L`,
-                paid: `₹${(amounts.paid / 100000).toFixed(1)}L`,
-                status:
-                  amounts.pending > 0
-                    ? "Payment Due"
-                    : amounts.paid > 0
-                    ? "Settled"
-                    : "Current",
-                ids: amounts.ids,
-              }))
-              .slice(0, 3);
-            setVendors(vendorList);
-          }
+          setError("Failed to fetch project details.");
+          setBudgetBreakdown([]);
+          setExpenses([]);
+          setVendors([]);
+          setFinancialOverview({ totalBudget: 0, totalSpent: 0, remaining: 0 });
+          return;
         }
-      } catch (error) {
-        console.error("Fetch error:", error);
+        if (!project) {
+          setError("Selected project not found.");
+          setBudgetBreakdown([]);
+          setExpenses([]);
+          setVendors([]);
+          setFinancialOverview({ totalBudget: 0, totalSpent: 0, remaining: 0 });
+          setLoading(false);
+          return;
+        }
+        const totalBudget = project.total_budget || 0;
+        setFinancialOverview({ totalBudget, totalSpent: 0, remaining: 0 });
+
+        // Fetch budgets
+        const { data: budgetsData, error: budgetError } = await supabase
+          .from("budgets")
+          .select("id, department, allocated, spent")
+          .eq("project_id", selectedProjectId);
+        if (budgetError) {
+          console.error("Budgets fetch error:", budgetError);
+          setError("Failed to fetch budgets.");
+          setBudgetBreakdown([]);
+        } else {
+          const budgetList: Budget[] = (budgetsData || []).map((budget) => {
+            const allocatedNum = budget.allocated || 0;
+            const spentNum = budget.spent || 0;
+            const progress =
+              allocatedNum > 0
+                ? Math.round((spentNum / allocatedNum) * 100)
+                : 0;
+            const status =
+              spentNum >= allocatedNum
+                ? "Completed"
+                : progress > 80
+                ? "On Track"
+                : "In Progress";
+            return {
+              id: budget.id,
+              category: budget.department || "Unknown",
+              allocated: `₹${(allocatedNum / 100000).toFixed(1)}L`,
+              spent: `₹${(spentNum / 100000).toFixed(1)}L`,
+              progress,
+              status,
+            };
+          });
+          setBudgetBreakdown(budgetList);
+          const totalSpent =
+            budgetsData?.reduce((sum, b) => sum + (b.spent || 0), 0) || 0;
+          const remaining =
+            budgetsData?.reduce(
+              (sum, b) => sum + ((b.allocated || 0) - (b.spent || 0)),
+              0
+            ) || 0;
+          setFinancialOverview((prev) => ({
+            ...prev,
+            totalSpent,
+            remaining,
+          }));
+        }
+
+        // Fetch invoices for expenses
+        const { data: invoicesData, error: invoiceError } = await supabase
+          .from("invoices")
+          .select("id, vendor, amount, due_date, status, delay_days")
+          .eq("project_id", selectedProjectId)
+          .order("due_date", { ascending: false });
+        if (invoiceError) {
+          console.error("Invoices fetch error:", invoiceError);
+          setError("Failed to fetch expenses.");
+          setExpenses([]);
+        } else {
+          const expenseList: Expense[] = (invoicesData || []).map(
+            (invoice) => ({
+              id: invoice.id,
+              item: invoice.vendor || "Unknown",
+              amount: `₹${((invoice.amount || 0) / 100000).toFixed(1)}L`,
+              date: new Date(invoice.due_date),
+              status: invoice.status === "Paid" ? "Approved" : "Pending",
+              delay: invoice.delay_days
+                ? `${invoice.delay_days} days`
+                : undefined,
+            })
+          );
+          setExpenses(expenseList);
+        }
+
+        // Fetch invoices for vendors
+        const { data: vendorInvoices, error: vendorError } = await supabase
+          .from("invoices")
+          .select("id, vendor, amount, status")
+          .eq("project_id", selectedProjectId)
+          .order("vendor");
+        if (vendorError) {
+          console.error("Vendor invoices fetch error:", vendorError);
+          setError("Failed to fetch vendor payments.");
+          setVendors([]);
+        } else {
+          const vendorList: Vendor[] = (vendorInvoices || []).map(
+            (invoice) => ({
+              id: invoice.id,
+              name: invoice.vendor || "Unknown",
+              amount: `₹${((invoice.amount || 0) / 100000).toFixed(1)}L`,
+              status: invoice.status || "Pending",
+            })
+          );
+          setVendors(vendorList);
+        }
+      } catch (err) {
+        console.error("Fetch project data error:", err);
+        setError("An unexpected error occurred while fetching project data.");
+        setBudgetBreakdown([]);
+        setExpenses([]);
+        setVendors([]);
+        setFinancialOverview({ totalBudget: 0, totalSpent: 0, remaining: 0 });
+      } finally {
+        setLoading(false);
       }
     };
-    fetchData();
-  }, []);
+    fetchProjectData();
+  }, [selectedProjectId, refreshKey]);
 
   // Handle project deletion
   const onDeleteProject = async () => {
@@ -273,6 +329,7 @@ const Finance = () => {
       if (error) throw error;
       setProjects(projects.filter((p) => p.id !== selectedProjectId));
       setSelectedProjectId("");
+      localStorage.removeItem("selectedProjectId");
       alert("Project deleted successfully!");
     } catch (error) {
       console.error("Delete project error:", error);
@@ -282,28 +339,16 @@ const Finance = () => {
     }
   };
 
-  // Handle updates to Supabase - Consolidated CRUD
+  // Handle updates to Supabase
   const handleSave = async (section: Section) => {
-    if (isSaving) return;
+    if (isSaving || !selectedProjectId) return;
     setIsSaving(true);
     try {
-      const { data: projectData } = await supabase
-        .from("projects")
-        .select("id")
-        .eq("name", "Pranayam Oru Thudakkam")
-        .single();
-      const projectId = projectData?.id;
-      if (!projectId) {
-        throw new Error("Project not found");
-      }
-
       const table = tableMap[section];
 
       if (section === "budgetBreakdown") {
         // Update existing budgets
-        for (const budget of budgetBreakdown.filter(
-          (b) => b.id !== undefined
-        )) {
+        for (const budget of budgetBreakdown.filter((b) => b.id)) {
           const allocatedNum =
             parseFloat(budget.allocated.replace(/[^0-9.]/g, "")) * 100000;
           const spentNum =
@@ -311,65 +356,37 @@ const Finance = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
               department: budget.category,
               allocated: allocatedNum,
               spent: spentNum,
             })
-            .eq("id", budget.id);
+            .eq("id", budget.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
-        // Insert new budget
-        if (newBudget.category && newBudget.allocated) {
+        // Insert new budgets
+        for (const budget of budgetBreakdown.filter((b) => !b.id)) {
           const allocatedNum =
-            parseFloat(newBudget.allocated.replace(/[^0-9.]/g, "")) * 100000;
-          const spentNum = newBudget.spent
-            ? parseFloat(newBudget.spent.replace(/[^0-9.]/g, "")) * 100000
-            : 0;
-          const { data: insertedData, error } = await supabase
-            .from(table)
-            .insert({
-              project_id: projectId,
-              department: newBudget.category,
-              allocated: allocatedNum,
-              spent: spentNum,
-            })
-            .select("id")
-            .single();
+            parseFloat(budget.allocated.replace(/[^0-9.]/g, "")) * 100000;
+          const spentNum =
+            parseFloat(budget.spent.replace(/[^0-9.]/g, "")) * 100000;
+          const { error } = await supabase.from(table).insert({
+            project_id: selectedProjectId,
+            department: budget.category,
+            allocated: allocatedNum,
+            spent: spentNum,
+          });
           if (error) throw error;
-          if (insertedData) {
-            setBudgetBreakdown([
-              ...budgetBreakdown,
-              {
-                ...newBudget,
-                id: insertedData.id,
-                spent: newBudget.spent || "₹0L",
-                progress:
-                  newBudget.spent && newBudget.allocated
-                    ? Math.round(
-                        (parseFloat(newBudget.spent.replace(/[^0-9.]/g, "")) /
-                          parseFloat(
-                            newBudget.allocated.replace(/[^0-9.]/g, "")
-                          )) *
-                          100
-                      )
-                    : 0,
-                status: newBudget.status || "In Progress",
-              } as Budget,
-            ]);
-            setNewBudget({});
-          }
         }
       } else if (section === "expenses") {
         // Update existing expenses
-        for (const expense of expenses.filter((e) => e.id !== undefined)) {
+        for (const expense of expenses.filter((e) => e.id)) {
           const amountNum =
             parseFloat(expense.amount.replace(/[^0-9.]/g, "")) * 100000;
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
-              vendor: expense.item.split(" - ")[0],
+              vendor: expense.item,
               amount: amountNum,
               due_date: expense.date.toISOString().split("T")[0],
               status: expense.status === "Approved" ? "Paid" : "Pending",
@@ -377,94 +394,59 @@ const Finance = () => {
                 ? parseInt(expense.delay.replace(/[^0-9]/g, "")) || 0
                 : null,
             })
-            .eq("id", expense.id);
+            .eq("id", expense.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
-        // Insert new expense
-        if (newExpense.item && newExpense.date && newExpense.amount) {
+        // Insert new expenses
+        for (const expense of expenses.filter((e) => !e.id)) {
           const amountNum =
-            parseFloat(newExpense.amount.replace(/[^0-9.]/g, "")) * 100000;
-          const { data: insertedData, error } = await supabase
-            .from(table)
-            .insert({
-              project_id: projectId,
-              vendor: newExpense.item.split(" - ")[0] || newExpense.item,
-              amount: amountNum,
-              due_date: newExpense.date.toISOString().split("T")[0],
-              status: newExpense.status === "Approved" ? "Paid" : "Pending",
-              delay_days: newExpense.delay
-                ? parseInt(newExpense.delay.replace(/[^0-9]/g, "")) || 0
-                : null,
-            })
-            .select("id")
-            .single();
+            parseFloat(expense.amount.replace(/[^0-9.]/g, "")) * 100000;
+          const { error } = await supabase.from(table).insert({
+            project_id: selectedProjectId,
+            vendor: expense.item,
+            amount: amountNum,
+            due_date: expense.date.toISOString().split("T")[0],
+            status: expense.status === "Approved" ? "Paid" : "Pending",
+            delay_days: expense.delay
+              ? parseInt(expense.delay.replace(/[^0-9]/g, "")) || 0
+              : null,
+          });
           if (error) throw error;
-          if (insertedData) {
-            setExpenses([
-              ...expenses,
-              { ...newExpense, id: insertedData.id } as Expense,
-            ]);
-            setNewExpense({});
-          }
         }
       } else if (section === "vendors") {
-        // Update existing vendor invoices
-        for (const vendor of vendors.filter((v) => v.ids && v.ids.length > 0)) {
-          const pendingNum =
-            parseFloat(vendor.pending.replace(/[^0-9.]/g, "")) * 100000;
-          const paidNum =
-            parseFloat(vendor.paid.replace(/[^0-9.]/g, "")) * 100000;
-          const status = vendor.status === "Payment Due" ? "Pending" : "Paid";
+        // Update existing vendors
+        for (const vendor of vendors.filter((v) => v.id)) {
+          const amountNum =
+            parseFloat(vendor.amount.replace(/[^0-9.]/g, "")) * 100000;
           const { error } = await supabase
             .from(table)
             .update({
               vendor: vendor.name,
-              amount: status === "Paid" ? paidNum : pendingNum,
-              status,
+              amount: amountNum,
+              status: vendor.status,
             })
-            .in("id", vendor.ids);
+            .eq("id", vendor.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
-        // Insert new vendor invoice
-        if (newVendor.name && (newVendor.pending || newVendor.paid)) {
-          const pendingNum = newVendor.pending
-            ? parseFloat(newVendor.pending.replace(/[^0-9.]/g, "")) * 100000
-            : 0;
-          const paidNum = newVendor.paid
-            ? parseFloat(newVendor.paid.replace(/[^0-9.]/g, "")) * 100000
-            : 0;
-          const amount = paidNum > 0 ? paidNum : pendingNum;
-          const status = paidNum > 0 ? "Paid" : "Pending";
-          const { data: insertedData, error } = await supabase
-            .from(table)
-            .insert({
-              project_id: projectId,
-              vendor: newVendor.name,
-              amount,
-              status,
-              due_date: new Date().toISOString().split("T")[0], // Default to today
-            })
-            .select("id")
-            .single();
+        // Insert new vendors
+        for (const vendor of vendors.filter((v) => !v.id)) {
+          const amountNum =
+            parseFloat(vendor.amount.replace(/[^0-9.]/g, "")) * 100000;
+          const { error } = await supabase.from(table).insert({
+            project_id: selectedProjectId,
+            vendor: vendor.name,
+            amount: amountNum,
+            status: vendor.status || "Pending",
+            due_date: new Date().toISOString().split("T")[0],
+          });
           if (error) throw error;
-          if (insertedData) {
-            setVendors([
-              ...vendors,
-              {
-                ...newVendor,
-                id: insertedData.id,
-                pending: newVendor.pending || "₹0L",
-                paid: newVendor.paid || "₹0L",
-                status:
-                  newVendor.status || (paidNum > 0 ? "Settled" : "Payment Due"),
-                ids: [insertedData.id],
-              } as Vendor,
-            ]);
-            setNewVendor({});
-          }
         }
       }
 
+      // Refresh data after save
+      setRefreshKey((prev) => prev + 1);
       setEditMode({ ...editMode, [section]: false });
       alert("Changes saved successfully!");
     } catch (error) {
@@ -484,21 +466,27 @@ const Finance = () => {
         alert("Please fill in Category and Allocated fields.");
         return;
       }
+      const allocatedNum =
+        parseFloat(newBudget.allocated.replace(/[^0-9.]/g, "")) * 100000;
+      const spentNum = newBudget.spent
+        ? parseFloat(newBudget.spent.replace(/[^0-9.]/g, "")) * 100000
+        : 0;
+      const progress =
+        allocatedNum > 0 ? Math.round((spentNum / allocatedNum) * 100) : 0;
+      const status =
+        spentNum >= allocatedNum
+          ? "Completed"
+          : progress > 80
+          ? "On Track"
+          : "In Progress";
       setBudgetBreakdown([
         ...budgetBreakdown,
         {
-          ...newBudget,
-          id: undefined,
+          category: newBudget.category,
+          allocated: newBudget.allocated,
           spent: newBudget.spent || "₹0L",
-          progress:
-            newBudget.spent && newBudget.allocated
-              ? Math.round(
-                  (parseFloat(newBudget.spent.replace(/[^0-9.]/g, "")) /
-                    parseFloat(newBudget.allocated.replace(/[^0-9.]/g, ""))) *
-                    100
-                )
-              : 0,
-          status: newBudget.status || "In Progress",
+          progress,
+          status,
         } as Budget,
       ]);
       setNewBudget({});
@@ -511,30 +499,21 @@ const Finance = () => {
         ...expenses,
         {
           ...newExpense,
-          id: undefined,
-          category: newExpense.category || "Unknown",
           status: newExpense.status || "Pending",
           delay: newExpense.delay || undefined,
         } as Expense,
       ]);
       setNewExpense({});
     } else if (section === "vendors") {
-      if (!newVendor.name || (!newVendor.pending && !newVendor.paid)) {
-        alert(
-          "Please fill in Vendor Name and at least one of Pending or Paid fields."
-        );
+      if (!newVendor.name || !newVendor.amount) {
+        alert("Please fill in Vendor Name and Amount fields.");
         return;
       }
       setVendors([
         ...vendors,
         {
           ...newVendor,
-          id: undefined,
-          pending: newVendor.pending || "₹0L",
-          paid: newVendor.paid || "₹0L",
-          status:
-            newVendor.status || (newVendor.paid ? "Settled" : "Payment Due"),
-          ids: [],
+          status: newVendor.status || "Pending",
         } as Vendor,
       ]);
       setNewVendor({});
@@ -542,7 +521,7 @@ const Finance = () => {
   };
 
   // Handle deleting items
-  const handleDelete = async (section: Section, id: number | number[]) => {
+  const handleDelete = async (section: Section, index: number) => {
     if (
       !window.confirm(
         `Are you sure you want to delete this ${section.slice(0, -1)}?`
@@ -552,21 +531,24 @@ const Finance = () => {
     }
     try {
       const table = tableMap[section];
-      if (section === "vendors") {
+      let id: number | undefined;
+      if (section === "budgetBreakdown") {
+        id = budgetBreakdown[index]?.id;
+        setBudgetBreakdown(budgetBreakdown.filter((_, i) => i !== index));
+      } else if (section === "expenses") {
+        id = expenses[index]?.id;
+        setExpenses(expenses.filter((_, i) => i !== index));
+      } else if (section === "vendors") {
+        id = vendors[index]?.id;
+        setVendors(vendors.filter((_, i) => i !== index));
+      }
+      if (id) {
         const { error } = await supabase
           .from(table)
           .delete()
-          .in("id", id as number[]);
+          .eq("id", id)
+          .eq("project_id", selectedProjectId);
         if (error) throw error;
-        setVendors(vendors.filter((v) => v.ids !== id));
-      } else {
-        const { error } = await supabase.from(table).delete().eq("id", id);
-        if (error) throw error;
-        if (section === "budgetBreakdown") {
-          setBudgetBreakdown(budgetBreakdown.filter((b) => b.id !== id));
-        } else if (section === "expenses") {
-          setExpenses(expenses.filter((e) => e.id !== id));
-        }
       }
       alert(`${section.slice(0, -1)} deleted successfully!`);
     } catch (error) {
@@ -577,7 +559,7 @@ const Finance = () => {
     }
   };
 
-  // Cancel edit mode and reset new item forms
+  // Cancel edit mode and reset
   const handleCancel = (section: Section) => {
     if (section === "budgetBreakdown") {
       setNewBudget({});
@@ -586,8 +568,22 @@ const Finance = () => {
     } else if (section === "vendors") {
       setNewVendor({});
     }
+    setRefreshKey((prev) => prev + 1); // Re-fetch data to revert changes
     setEditMode({ ...editMode, [section]: false });
   };
+
+  // Render loading or error states
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
+
+  if (!selectedProjectId) {
+    return <div>Please select a project from the sidebar.</div>;
+  }
 
   return (
     <ErrorBoundary>
@@ -735,21 +731,10 @@ const Finance = () => {
                         }
                         className="mb-2"
                       />
-                      <select
-                        value={newBudget.status || "In Progress"}
-                        onChange={(e) =>
-                          setNewBudget({ ...newBudget, status: e.target.value })
-                        }
-                        className="w-full p-2 border border-input rounded-md mb-2"
-                      >
-                        <option value="In Progress">In Progress</option>
-                        <option value="On Track">On Track</option>
-                        <option value="Completed">Completed</option>
-                      </select>
                     </div>
                   )}
                   {budgetBreakdown.map((budget, idx) => (
-                    <div key={budget.id || idx} className="space-y-2">
+                    <div key={budget.id || `new-${idx}`} className="space-y-2">
                       {editMode.budgetBreakdown ? (
                         <>
                           <div className="flex justify-between items-center mb-2">
@@ -766,7 +751,7 @@ const Finance = () => {
                               variant="destructive"
                               size="sm"
                               onClick={() =>
-                                handleDelete("budgetBreakdown", budget.id!)
+                                handleDelete("budgetBreakdown", idx)
                               }
                               disabled={isSaving}
                             >
@@ -778,21 +763,24 @@ const Finance = () => {
                             onChange={(e) => {
                               const newBudgets = [...budgetBreakdown];
                               newBudgets[idx].allocated = e.target.value;
+                              const allocatedNum =
+                                parseFloat(
+                                  e.target.value.replace(/[^0-9.]/g, "")
+                                ) * 100000;
+                              const spentNum =
+                                parseFloat(
+                                  newBudgets[idx].spent.replace(/[^0-9.]/g, "")
+                                ) * 100000;
                               newBudgets[idx].progress =
-                                newBudgets[idx].spent && e.target.value
-                                  ? Math.round(
-                                      (parseFloat(
-                                        newBudgets[idx].spent.replace(
-                                          /[^0-9.]/g,
-                                          ""
-                                        )
-                                      ) /
-                                        parseFloat(
-                                          e.target.value.replace(/[^0-9.]/g, "")
-                                        )) *
-                                        100
-                                    )
+                                allocatedNum > 0
+                                  ? Math.round((spentNum / allocatedNum) * 100)
                                   : 0;
+                              newBudgets[idx].status =
+                                spentNum >= allocatedNum
+                                  ? "Completed"
+                                  : newBudgets[idx].progress > 80
+                                  ? "On Track"
+                                  : "In Progress";
                               setBudgetBreakdown(newBudgets);
                             }}
                             className="mb-2"
@@ -802,38 +790,31 @@ const Finance = () => {
                             onChange={(e) => {
                               const newBudgets = [...budgetBreakdown];
                               newBudgets[idx].spent = e.target.value;
+                              const spentNum =
+                                parseFloat(
+                                  e.target.value.replace(/[^0-9.]/g, "")
+                                ) * 100000;
+                              const allocatedNum =
+                                parseFloat(
+                                  newBudgets[idx].allocated.replace(
+                                    /[^0-9.]/g,
+                                    ""
+                                  )
+                                ) * 100000;
                               newBudgets[idx].progress =
-                                e.target.value && newBudgets[idx].allocated
-                                  ? Math.round(
-                                      (parseFloat(
-                                        e.target.value.replace(/[^0-9.]/g, "")
-                                      ) /
-                                        parseFloat(
-                                          newBudgets[idx].allocated.replace(
-                                            /[^0-9.]/g,
-                                            ""
-                                          )
-                                        )) *
-                                        100
-                                    )
+                                allocatedNum > 0
+                                  ? Math.round((spentNum / allocatedNum) * 100)
                                   : 0;
+                              newBudgets[idx].status =
+                                spentNum >= allocatedNum
+                                  ? "Completed"
+                                  : newBudgets[idx].progress > 80
+                                  ? "On Track"
+                                  : "In Progress";
                               setBudgetBreakdown(newBudgets);
                             }}
                             className="mb-2"
                           />
-                          <select
-                            value={budget.status}
-                            onChange={(e) => {
-                              const newBudgets = [...budgetBreakdown];
-                              newBudgets[idx].status = e.target.value;
-                              setBudgetBreakdown(newBudgets);
-                            }}
-                            className="w-full p-2 border border-input rounded-md mb-2"
-                          >
-                            <option value="In Progress">In Progress</option>
-                            <option value="On Track">On Track</option>
-                            <option value="Completed">Completed</option>
-                          </select>
                         </>
                       ) : (
                         <>
@@ -914,7 +895,7 @@ const Finance = () => {
                   {editMode.expenses && (
                     <div className="p-3 bg-secondary/20 rounded-lg space-y-2 mb-3">
                       <Input
-                        placeholder="Item (e.g., Vendor - Date)"
+                        placeholder="Item (Vendor)"
                         value={newExpense.item || ""}
                         onChange={(e) =>
                           setNewExpense({ ...newExpense, item: e.target.value })
@@ -939,17 +920,6 @@ const Finance = () => {
                           setNewExpense({
                             ...newExpense,
                             amount: e.target.value,
-                          })
-                        }
-                        className="mb-2"
-                      />
-                      <Input
-                        placeholder="Category"
-                        value={newExpense.category || ""}
-                        onChange={(e) =>
-                          setNewExpense({
-                            ...newExpense,
-                            category: e.target.value,
                           })
                         }
                         className="mb-2"
@@ -982,7 +952,7 @@ const Finance = () => {
                   )}
                   {expenses.map((expense, idx) => (
                     <div
-                      key={expense.id || idx}
+                      key={expense.id || `new-${idx}`}
                       className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
                     >
                       {editMode.expenses ? (
@@ -1019,15 +989,6 @@ const Finance = () => {
                               }}
                               className="mb-2"
                             />
-                            <Input
-                              value={expense.category}
-                              onChange={(e) => {
-                                const newExpenses = [...expenses];
-                                newExpenses[idx].category = e.target.value;
-                                setExpenses(newExpenses);
-                              }}
-                              className="mb-2"
-                            />
                             <select
                               value={expense.status}
                               onChange={(e) => {
@@ -1053,9 +1014,7 @@ const Finance = () => {
                           <Button
                             variant="destructive"
                             size="sm"
-                            onClick={() =>
-                              handleDelete("expenses", expense.id!)
-                            }
+                            onClick={() => handleDelete("expenses", idx)}
                             disabled={isSaving}
                           >
                             <Trash2 className="h-4 w-4" />
@@ -1068,7 +1027,6 @@ const Finance = () => {
                               {expense.item}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {expense.category} •{" "}
                               {expense.date.toLocaleDateString("en-GB", {
                                 month: "short",
                                 day: "numeric",
@@ -1114,7 +1072,10 @@ const Finance = () => {
               </DashboardCard>
 
               {/* Vendor Payments */}
-              <DashboardCard title="Vendor Payment Status" icon={AlertTriangle}>
+              <DashboardCard
+                title="Recent Vendor Payments"
+                icon={AlertTriangle}
+              >
                 <div className="space-y-3">
                   <div className="flex gap-2 mb-3">
                     <Button
@@ -1128,16 +1089,16 @@ const Finance = () => {
                       disabled={isSaving}
                     >
                       <Edit2 className="h-4 w-4 mr-2" />
-                      {editMode.vendors ? "Cancel Edit" : "Edit Vendors"}
+                      {editMode.vendors ? "Cancel Edit" : "Edit Payments"}
                     </Button>
                     <Button
                       variant="outline"
                       onClick={() => editMode.vendors && handleAdd("vendors")}
-                      disabled={!editMode.vendors || isSubmitting}
+                      disabled={!editMode.vendors || isSaving}
                       className="flex-1"
                     >
                       <Plus className="h-4 w-4 mr-2" />
-                      Add Vendor
+                      Add Payment
                     </Button>
                   </div>
                   {editMode.vendors && (
@@ -1151,40 +1112,28 @@ const Finance = () => {
                         className="mb-2"
                       />
                       <Input
-                        placeholder="Paid (e.g., ₹20L)"
-                        value={newVendor.paid || ""}
+                        placeholder="Amount (e.g., ₹10L)"
+                        value={newVendor.amount || ""}
                         onChange={(e) =>
-                          setNewVendor({ ...newVendor, paid: e.target.value })
-                        }
-                        className="mb-2"
-                      />
-                      <Input
-                        placeholder="Pending (e.g., ₹10L)"
-                        value={newVendor.pending || ""}
-                        onChange={(e) =>
-                          setNewVendor({
-                            ...newVendor,
-                            pending: e.target.value,
-                          })
+                          setNewVendor({ ...newVendor, amount: e.target.value })
                         }
                         className="mb-2"
                       />
                       <select
-                        value={newVendor.status || "Payment Due"}
+                        value={newVendor.status || "Pending"}
                         onChange={(e) =>
                           setNewVendor({ ...newVendor, status: e.target.value })
                         }
                         className="w-full p-2 border border-input rounded-md mb-2"
                       >
-                        <option value="Payment Due">Payment Due</option>
-                        <option value="Settled">Settled</option>
-                        <option value="Current">Current</option>
+                        <option value="Paid">Paid</option>
+                        <option value="Pending">Pending</option>
                       </select>
                     </div>
                   )}
                   {vendors.map((vendor, idx) => (
                     <div
-                      key={vendor.id || idx}
+                      key={vendor.id || `new-${idx}`}
                       className="p-3 bg-secondary/20 rounded-lg"
                     >
                       {editMode.vendors ? (
@@ -1202,55 +1151,33 @@ const Finance = () => {
                             <Button
                               variant="destructive"
                               size="sm"
-                              onClick={() =>
-                                handleDelete("vendors", vendor.ids)
-                              }
+                              onClick={() => handleDelete("vendors", idx)}
                               disabled={isSaving}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
                           </div>
-                          <div className="grid grid-cols-2 gap-2">
-                            <Input
-                              value={vendor.paid}
-                              onChange={(e) => {
-                                const newVendors = [...vendors];
-                                newVendors[idx].paid = e.target.value;
-                                newVendors[idx].status =
-                                  e.target.value && !newVendors[idx].pending
-                                    ? "Settled"
-                                    : "Payment Due";
-                                setVendors(newVendors);
-                              }}
-                              className="mb-2"
-                            />
-                            <Input
-                              value={vendor.pending}
-                              onChange={(e) => {
-                                const newVendors = [...vendors];
-                                newVendors[idx].pending = e.target.value;
-                                newVendors[idx].status =
-                                  newVendors[idx].paid && !e.target.value
-                                    ? "Settled"
-                                    : "Payment Due";
-                                setVendors(newVendors);
-                              }}
-                              className="mb-2"
-                            />
-                            <select
-                              value={vendor.status}
-                              onChange={(e) => {
-                                const newVendors = [...vendors];
-                                newVendors[idx].status = e.target.value;
-                                setVendors(newVendors);
-                              }}
-                              className="w-full p-2 border border-input rounded-md mb-2"
-                            >
-                              <option value="Payment Due">Payment Due</option>
-                              <option value="Settled">Settled</option>
-                              <option value="Current">Current</option>
-                            </select>
-                          </div>
+                          <Input
+                            value={vendor.amount}
+                            onChange={(e) => {
+                              const newVendors = [...vendors];
+                              newVendors[idx].amount = e.target.value;
+                              setVendors(newVendors);
+                            }}
+                            className="mb-2"
+                          />
+                          <select
+                            value={vendor.status}
+                            onChange={(e) => {
+                              const newVendors = [...vendors];
+                              newVendors[idx].status = e.target.value;
+                              setVendors(newVendors);
+                            }}
+                            className="w-full p-2 border border-input rounded-md mb-2"
+                          >
+                            <option value="Paid">Paid</option>
+                            <option value="Pending">Pending</option>
+                          </select>
                         </>
                       ) : (
                         <>
@@ -1258,30 +1185,25 @@ const Finance = () => {
                             <p className="font-medium text-sm">{vendor.name}</p>
                             <Badge
                               variant={
-                                vendor.status === "Payment Due"
+                                vendor.status === "Pending"
                                   ? "destructive"
-                                  : vendor.status === "Settled"
-                                  ? "default"
-                                  : "outline"
+                                  : "default"
                               }
                               className="text-xs"
                             >
                               {vendor.status}
                             </Badge>
                           </div>
-                          <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div>
-                              <p className="text-muted-foreground">Paid</p>
-                              <p className="font-bold text-primary">
-                                {vendor.paid}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-muted-foreground">Pending</p>
-                              <p className="font-bold text-destructive">
-                                {vendor.pending}
-                              </p>
-                            </div>
+                          <div className="text-xs">
+                            <p
+                              className={`font-bold ${
+                                vendor.status === "Pending"
+                                  ? "text-destructive"
+                                  : "text-primary"
+                              }`}
+                            >
+                              {vendor.amount}
+                            </p>
                           </div>
                         </>
                       )}

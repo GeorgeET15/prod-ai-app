@@ -61,9 +61,7 @@ const Auth = () => {
               <Film className="w-8 h-8 text-primary-foreground" />
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-foreground">
-            Production Copilot
-          </h1>
+          <h1 className="text-3xl font-bold text-foreground">POD . AI</h1>
           <p className="text-muted-foreground">
             AI-Powered Production Management
           </p>

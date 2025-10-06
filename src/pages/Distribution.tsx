@@ -17,8 +17,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useState, useEffect, Component } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import DatePicker from "react-datepicker";
-import "react-datepicker/dist/react-datepicker.css";
 
 // Error Boundary Component
 class ErrorBoundary extends Component<any, { hasError: boolean }> {
@@ -85,6 +83,8 @@ const tableMap: Record<Section, TableName> = {
 };
 
 const Distribution = () => {
+  console.log("Using Distribution.tsx version c2f8b4a9");
+
   const [theaters, setTheaters] = useState<Theater[]>([]);
   const [marketing, setMarketing] = useState<Marketing[]>([]);
   const [releases, setReleases] = useState<Release[]>([]);
@@ -107,185 +107,272 @@ const Distribution = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Fetch data from Supabase
+  // Fetch projects and set selectedProjectId from local storage
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchProjects = async () => {
+      console.log("Fetching projects list");
       try {
-        // Fetch projects for the sidebar
+        setLoading(true);
+        setError(null);
         const { data: projectsData, error: projectsError } = await supabase
           .from("projects")
           .select("id, name");
         if (projectsError) {
           console.error("Projects fetch error:", projectsError);
-        } else {
-          setProjects(projectsData || []);
-          // Set the selected project ID (e.g., for "Pranayam Oru Thudakkam")
-          const selectedProject = projectsData?.find(
-            (p) => p.name === "Pranayam Oru Thudakkam"
-          );
-          if (selectedProject) {
-            setSelectedProjectId(selectedProject.id);
-          }
+          setError("Failed to fetch projects.");
+          return;
         }
+        setProjects(projectsData || []);
 
+        // Get selectedProjectId from local storage
+        const storedProjectId = localStorage.getItem("selectedProjectId");
+        console.log("Stored selectedProjectId:", storedProjectId);
+        if (
+          storedProjectId &&
+          projectsData?.some((p) => p.id === storedProjectId)
+        ) {
+          setSelectedProjectId(storedProjectId);
+        } else if (projectsData?.length > 0) {
+          setSelectedProjectId(projectsData[0].id);
+          localStorage.setItem("selectedProjectId", projectsData[0].id);
+        } else {
+          setError("No projects available.");
+        }
+      } catch (err) {
+        console.error("Fetch projects error:", err);
+        setError("An unexpected error occurred while fetching projects.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchProjects();
+  }, []);
+
+  // Listen for localStorage changes to selectedProjectId
+  useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === "selectedProjectId") {
+        const newProjectId = event.newValue || "";
+        console.log(
+          "Storage event: selectedProjectId changed to",
+          newProjectId
+        );
+        if (newProjectId && projects.some((p) => p.id === newProjectId)) {
+          setSelectedProjectId(newProjectId);
+        } else {
+          setSelectedProjectId("");
+          setError("Selected project is invalid or not found.");
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, [projects]);
+
+  // Fetch project data when selectedProjectId or refreshKey changes
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!selectedProjectId) {
+        console.log("No selectedProjectId, skipping fetch");
+        setError("No project selected.");
+        setTheaters([]);
+        setMarketing([]);
+        setReleases([]);
+        setRevenueProjections({
+          totalBudget: 0,
+          preReleaseSales: 0,
+          projectedBoxOffice: 0,
+          breakEvenDay: "",
+        });
+        setLoading(false);
+        return;
+      }
+      console.log("Fetching project data for ID:", selectedProjectId);
+      setLoading(true);
+      setError(null);
+      try {
         // Fetch project data for budget and projections
         const { data: project, error: projectError } = await supabase
           .from("projects")
           .select("id, total_budget, end_date")
-          .eq("name", "Pranayam Oru Thudakkam")
-          .single();
+          .eq("id", selectedProjectId)
+          .maybeSingle();
         if (projectError) {
           console.error("Project fetch error:", projectError);
-        } else {
-          const totalBudget = project.total_budget;
-          const endDate = new Date(project.end_date);
+          setError("Failed to fetch project details.");
+          setTheaters([]);
+          setMarketing([]);
+          setReleases([]);
           setRevenueProjections({
-            totalBudget,
-            preReleaseSales: Math.round(totalBudget * 1.2), // 20% more than budget
-            projectedBoxOffice: Math.round(totalBudget * 2.5), // 2.5x budget
-            breakEvenDay: "Day 5", // Can be refined with more data
+            totalBudget: 0,
+            preReleaseSales: 0,
+            projectedBoxOffice: 0,
+            breakEvenDay: "",
           });
-
-          const projectId = project.id;
-
-          // Theater Distribution
-          const { data: theaterData, error: theaterError } = await supabase
-            .from("theaters")
-            .select("id, region, screens, revenue, status")
-            .eq("project_id", projectId);
-          if (theaterError)
-            console.error("Theaters fetch error:", theaterError);
-          else {
-            setTheaters(
-              theaterData?.length > 0
-                ? theaterData.map((theater) => ({
-                    id: theater.id,
-                    region: theater.region,
-                    screens: theater.screens,
-                    status: theater.status,
-                    revenue: `₹${(theater.revenue / 10000000).toFixed(1)} Cr`,
-                  }))
-                : [
-                    {
-                      region: "Telangana",
-                      screens: 150,
-                      status: "Confirmed",
-                      revenue: "₹1.5 Cr",
-                    },
-                    {
-                      region: "Andhra Pradesh",
-                      screens: 120,
-                      status: "Confirmed",
-                      revenue: "₹1.2 Cr",
-                    },
-                    {
-                      region: "Karnataka",
-                      screens: 90,
-                      status: "In Negotiation",
-                      revenue: "₹0.9 Cr (Est)",
-                    },
-                    {
-                      region: "Tamil Nadu",
-                      screens: 70,
-                      status: "Pending",
-                      revenue: "₹0.7 Cr (Est)",
-                    },
-                    {
-                      region: "Kerala",
-                      screens: 60,
-                      status: "Pending",
-                      revenue: "₹0.6 Cr (Est)",
-                    },
-                  ]
-            );
-          }
-
-          // Marketing Campaigns
-          const { data: marketingData, error: marketingError } = await supabase
-            .from("budgets")
-            .select("id, department, allocated, spent")
-            .eq("project_id", projectId)
-            .eq("department", "Marketing");
-          if (marketingError)
-            console.error("Marketing fetch error:", marketingError);
-          else {
-            setMarketing(
-              marketingData?.map((item) => ({
-                id: item.id,
-                campaign: item.department,
-                budget: `₹${(item.allocated / 100000).toFixed(0)}L`,
-                spent: `₹${(item.spent / 100000).toFixed(0)}L`,
-                progress: Math.round((item.spent / item.allocated) * 100) || 0,
-                status: item.spent >= item.allocated ? "Completed" : "Active",
-              })) || []
-            );
-          }
-
-          // Release Schedule
-          const { data: scheduleData, error: scheduleError } = await supabase
-            .from("schedules")
-            .select("id, status, deadline, description")
-            .eq("project_id", projectId)
-            .order("deadline", { ascending: true })
-            .limit(3);
-          if (scheduleError)
-            console.error("Schedule fetch error:", scheduleError);
-          else {
-            const endDate = new Date(project.end_date);
-            setReleases(
-              scheduleData?.length > 0
-                ? scheduleData.map((schedule, idx) => ({
-                    id: schedule.id,
-                    platform:
-                      schedule.description ||
-                      ["Theatrical", "OTT", "Satellite Rights"][idx],
-                    date: schedule.deadline,
-                    status:
-                      schedule.status ||
-                      ["Scheduled", "Under Discussion", "In Negotiation"][idx],
-                    markets: ["Pan India", "Worldwide", "Malayalam States"][
-                      idx
-                    ],
-                  }))
-                : [
-                    {
-                      platform: "Theatrical",
-                      date: endDate.toISOString().split("T")[0],
-                      status: "Scheduled",
-                      markets: "Pan India",
-                    },
-                    {
-                      platform: "OTT",
-                      date: new Date(endDate.setMonth(endDate.getMonth() + 1))
-                        .toISOString()
-                        .split("T")[0],
-                      status: "Under Discussion",
-                      markets: "Worldwide",
-                    },
-                    {
-                      platform: "Satellite Rights",
-                      date: "TBD",
-                      status: "In Negotiation",
-                      markets: "Malayalam States",
-                    },
-                  ]
-            );
-          }
+          return;
         }
-      } catch (error) {
-        console.error("Fetch error:", error);
+        if (!project) {
+          console.log("No project found for ID:", selectedProjectId);
+          setError("Selected project not found.");
+          setTheaters([]);
+          setMarketing([]);
+          setReleases([]);
+          setRevenueProjections({
+            totalBudget: 0,
+            preReleaseSales: 0,
+            projectedBoxOffice: 0,
+            breakEvenDay: "",
+          });
+          setLoading(false);
+          return;
+        }
+        const totalBudget = project.total_budget || 0;
+        const endDate = project.end_date
+          ? new Date(project.end_date)
+          : new Date();
+        setRevenueProjections({
+          totalBudget,
+          preReleaseSales: Math.round(totalBudget * 1.2), // 20% more than budget
+          projectedBoxOffice: Math.round(totalBudget * 2.5), // 2.5x budget
+          breakEvenDay: "Day 5", // Can be refined with more data
+        });
+
+        // Theater Distribution (disabled until table is populated)
+        setTheaters([
+          {
+            region: "Telangana",
+            screens: 150,
+            status: "Confirmed",
+            revenue: "₹1.5 Cr",
+          },
+          {
+            region: "Andhra Pradesh",
+            screens: 120,
+            status: "Confirmed",
+            revenue: "₹1.2 Cr",
+          },
+          {
+            region: "Karnataka",
+            screens: 90,
+            status: "In Negotiation",
+            revenue: "₹0.9 Cr (Est)",
+          },
+          {
+            region: "Tamil Nadu",
+            screens: 70,
+            status: "Pending",
+            revenue: "₹0.7 Cr (Est)",
+          },
+          {
+            region: "Kerala",
+            screens: 60,
+            status: "Pending",
+            revenue: "₹0.6 Cr (Est)",
+          },
+        ]);
+
+        // Marketing Campaigns
+        const { data: marketingData, error: marketingError } = await supabase
+          .from("budgets")
+          .select("id, department, allocated, spent")
+          .eq("project_id", selectedProjectId)
+          .eq("department", "Marketing");
+        if (marketingError) {
+          console.error("Marketing fetch error:", marketingError);
+          setError("Failed to fetch marketing campaigns.");
+          setMarketing([]);
+        } else {
+          console.log("Marketing fetched:", marketingData);
+          setMarketing(
+            marketingData?.map((item) => ({
+              id: item.id,
+              campaign: item.department,
+              budget: `₹${(item.allocated / 100000).toFixed(0)}L`,
+              spent: `₹${(item.spent / 100000).toFixed(0)}L`,
+              progress: Math.round((item.spent / item.allocated) * 100) || 0,
+              status: item.spent >= item.allocated ? "Completed" : "Active",
+            })) || []
+          );
+        }
+
+        // Release Schedule
+        const { data: scheduleData, error: scheduleError } = await supabase
+          .from("schedules")
+          .select("id, status, start_date, description")
+          .eq("project_id", selectedProjectId)
+          .order("start_date", { ascending: true });
+        if (scheduleError) {
+          console.error("Schedule fetch error:", scheduleError);
+          setError("Failed to fetch release schedules.");
+          setReleases([]);
+        } else {
+          console.log("Schedules fetched:", scheduleData);
+          setReleases(
+            scheduleData?.length > 0
+              ? scheduleData.map((schedule, idx) => ({
+                  id: schedule.id,
+                  platform:
+                    schedule.description ||
+                    ["Theatrical", "OTT", "Satellite Rights"][idx],
+                  date: schedule.start_date || "TBD",
+                  status:
+                    schedule.status ||
+                    ["Scheduled", "Under Discussion", "In Negotiation"][idx],
+                  markets: ["Pan India", "Worldwide", "Malayalam States"][idx],
+                }))
+              : [
+                  {
+                    platform: "Theatrical",
+                    date: endDate.toISOString().split("T")[0],
+                    status: "Scheduled",
+                    markets: "Pan India",
+                  },
+                  {
+                    platform: "OTT",
+                    date: new Date(endDate.setMonth(endDate.getMonth() + 1))
+                      .toISOString()
+                      .split("T")[0],
+                    status: "Under Discussion",
+                    markets: "Worldwide",
+                  },
+                  {
+                    platform: "Satellite Rights",
+                    date: "TBD",
+                    status: "In Negotiation",
+                    markets: "Malayalam States",
+                  },
+                ]
+          );
+        }
+      } catch (err) {
+        console.error("Fetch project data error:", err);
+        setError("An unexpected error occurred while fetching project data.");
+        setTheaters([]);
+        setMarketing([]);
+        setReleases([]);
+        setRevenueProjections({
+          totalBudget: 0,
+          preReleaseSales: 0,
+          projectedBoxOffice: 0,
+          breakEvenDay: "",
+        });
+      } finally {
+        setLoading(false);
       }
     };
-
     fetchData();
-  }, []);
+  }, [selectedProjectId, refreshKey]);
 
   // Handle project deletion
   const onDeleteProject = async () => {
     if (!selectedProjectId) return;
     setIsSubmitting(true);
     try {
+      console.log("Deleting project with ID:", selectedProjectId);
       const { error } = await supabase
         .from("projects")
         .delete()
@@ -293,6 +380,7 @@ const Distribution = () => {
       if (error) throw error;
       setProjects(projects.filter((p) => p.id !== selectedProjectId));
       setSelectedProjectId("");
+      localStorage.removeItem("selectedProjectId");
       alert("Project deleted successfully!");
     } catch (error) {
       console.error("Delete project error:", error);
@@ -304,19 +392,10 @@ const Distribution = () => {
 
   // Handle updates to Supabase - Consolidated CRUD
   const handleSave = async (section: Section) => {
-    if (isSaving) return;
+    if (isSaving || !selectedProjectId) return;
     setIsSaving(true);
     try {
-      const { data: projectData } = await supabase
-        .from("projects")
-        .select("id")
-        .eq("name", "Pranayam Oru Thudakkam")
-        .single();
-      const projectId = projectData?.id;
-      if (!projectId) {
-        throw new Error("Project not found");
-      }
-
+      console.log(`Saving ${section} for project ID:`, selectedProjectId);
       const table = tableMap[section];
 
       if (section === "theaters") {
@@ -328,13 +407,14 @@ const Distribution = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               region: theater.region,
               screens: theater.screens,
               revenue: revenueNum,
               status: theater.status,
             })
-            .eq("id", theater.id);
+            .eq("id", theater.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new theater
@@ -346,7 +426,7 @@ const Distribution = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               region: newTheater.region,
               screens: newTheater.screens || 0,
               revenue: revenueNum,
@@ -377,12 +457,13 @@ const Distribution = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               department: campaign.campaign,
               allocated: budgetNum,
               spent: spentNum,
             })
-            .eq("id", campaign.id);
+            .eq("id", campaign.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new marketing campaign
@@ -395,7 +476,7 @@ const Distribution = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               department: newMarketing.campaign,
               allocated: budgetNum,
               spent: spentNum,
@@ -434,12 +515,13 @@ const Distribution = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               description: release.platform,
               status: release.status,
-              deadline: release.date === "TBD" ? null : release.date,
+              start_date: release.date === "TBD" ? null : release.date,
             })
-            .eq("id", release.id);
+            .eq("id", release.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new release
@@ -447,13 +529,14 @@ const Distribution = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               description: newRelease.platform,
               status: newRelease.status || "Scheduled",
-              deadline:
+              start_date:
                 newRelease.date === "TBD" || !newRelease.date
                   ? null
                   : newRelease.date,
+              scene_id: 0, // Default value, adjust as needed
             })
             .select("id")
             .single();
@@ -472,6 +555,8 @@ const Distribution = () => {
         }
       }
 
+      console.log(`${section} saved successfully`);
+      setRefreshKey((prev) => prev + 1);
       setEditMode({ ...editMode, [section]: false });
       alert("Changes saved successfully!");
     } catch (error) {
@@ -553,8 +638,13 @@ const Distribution = () => {
       return;
     }
     try {
+      console.log(`Deleting ${section} with ID:`, id);
       const table = tableMap[section];
-      const { error } = await supabase.from(table).delete().eq("id", id);
+      const { error } = await supabase
+        .from(table)
+        .delete()
+        .eq("id", id)
+        .eq("project_id", selectedProjectId);
       if (error) throw error;
 
       if (section === "theaters") {
@@ -582,8 +672,22 @@ const Distribution = () => {
     } else if (section === "releases") {
       setNewRelease({});
     }
+    setRefreshKey((prev) => prev + 1); // Re-fetch data to revert changes
     setEditMode({ ...editMode, [section]: false });
   };
+
+  // Render loading or error states
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
+
+  if (!selectedProjectId) {
+    return <div>Please select a project from the sidebar.</div>;
+  }
 
   return (
     <ErrorBoundary>
@@ -611,189 +715,11 @@ const Distribution = () => {
             </header>
 
             <div className="p-6 space-y-6">
-              {/* Theater Distribution */}
+              {/* Theater Distribution (Disabled until table is populated) */}
               <DashboardCard title="Theater Distribution" icon={Ticket}>
-                <div className="space-y-3">
-                  <div className="flex gap-2 mb-3">
-                    <Button
-                      variant="outline"
-                      onClick={() =>
-                        editMode.theaters
-                          ? handleCancel("theaters")
-                          : setEditMode({ ...editMode, theaters: true })
-                      }
-                      className="flex-1"
-                      disabled={isSaving}
-                    >
-                      <Edit2 className="h-4 w-4 mr-2" />
-                      {editMode.theaters ? "Cancel Edit" : "Edit Theaters"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => editMode.theaters && handleAdd("theaters")}
-                      disabled={!editMode.theaters || isSaving}
-                      className="flex-1"
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Theater
-                    </Button>
-                  </div>
-                  {editMode.theaters && (
-                    <div className="p-3 bg-secondary/20 rounded-lg space-y-2 mb-3">
-                      <Input
-                        placeholder="Region"
-                        value={newTheater.region || ""}
-                        onChange={(e) =>
-                          setNewTheater({
-                            ...newTheater,
-                            region: e.target.value,
-                          })
-                        }
-                        className="mb-2"
-                      />
-                      <Input
-                        placeholder="Screens"
-                        value={newTheater.screens || ""}
-                        onChange={(e) =>
-                          setNewTheater({
-                            ...newTheater,
-                            screens: parseInt(e.target.value) || 0,
-                          })
-                        }
-                        type="number"
-                        className="mb-2"
-                      />
-                      <Input
-                        placeholder="Revenue (e.g., ₹1.5 Cr)"
-                        value={newTheater.revenue || ""}
-                        onChange={(e) =>
-                          setNewTheater({
-                            ...newTheater,
-                            revenue: e.target.value,
-                          })
-                        }
-                        className="mb-2"
-                      />
-                      <select
-                        value={newTheater.status || "Pending"}
-                        onChange={(e) =>
-                          setNewTheater({
-                            ...newTheater,
-                            status: e.target.value,
-                          })
-                        }
-                        className="w-full p-2 border border-input rounded-md mb-2"
-                      >
-                        <option value="Confirmed">Confirmed</option>
-                        <option value="In Negotiation">In Negotiation</option>
-                        <option value="Pending">Pending</option>
-                      </select>
-                    </div>
-                  )}
-                  {theaters.map((theater, idx) => (
-                    <div
-                      key={theater.id || idx}
-                      className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
-                    >
-                      {editMode.theaters ? (
-                        <>
-                          <div className="flex-1 space-y-2 mr-2">
-                            <Input
-                              value={theater.region}
-                              onChange={(e) => {
-                                const newTheaters = [...theaters];
-                                newTheaters[idx].region = e.target.value;
-                                setTheaters(newTheaters);
-                              }}
-                              className="mb-2"
-                            />
-                            <Input
-                              value={theater.screens}
-                              onChange={(e) => {
-                                const newTheaters = [...theaters];
-                                newTheaters[idx].screens =
-                                  parseInt(e.target.value) || 0;
-                                setTheaters(newTheaters);
-                              }}
-                              type="number"
-                              className="mb-2"
-                            />
-                            <Input
-                              value={theater.revenue}
-                              onChange={(e) => {
-                                const newTheaters = [...theaters];
-                                newTheaters[idx].revenue = e.target.value;
-                                setTheaters(newTheaters);
-                              }}
-                              className="mb-2"
-                            />
-                            <select
-                              value={theater.status}
-                              onChange={(e) => {
-                                const newTheaters = [...theaters];
-                                newTheaters[idx].status = e.target.value;
-                                setTheaters(newTheaters);
-                              }}
-                              className="w-full p-2 border border-input rounded-md mb-2"
-                            >
-                              <option value="Confirmed">Confirmed</option>
-                              <option value="In Negotiation">
-                                In Negotiation
-                              </option>
-                              <option value="Pending">Pending</option>
-                            </select>
-                          </div>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() =>
-                              handleDelete("theaters", theater.id!)
-                            }
-                            disabled={isSaving}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          <div>
-                            <p className="font-medium text-sm">
-                              {theater.region}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {theater.screens} screens
-                            </p>
-                          </div>
-                          <div className="text-right">
-                            <Badge
-                              variant={
-                                theater.status === "Confirmed"
-                                  ? "default"
-                                  : "outline"
-                              }
-                              className="text-xs mb-1"
-                            >
-                              {theater.status}
-                            </Badge>
-                            <p className="text-xs font-bold">
-                              {theater.revenue}
-                            </p>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
-                  {editMode.theaters && (
-                    <Button
-                      variant="default"
-                      onClick={() => handleSave("theaters")}
-                      disabled={isSaving}
-                      className="mt-3"
-                    >
-                      <Save className="h-4 w-4 mr-2" />
-                      {isSaving ? "Saving..." : "Save Changes"}
-                    </Button>
-                  )}
+                <div className="text-center text-muted-foreground">
+                  Theater distribution data is currently unavailable. Please
+                  ensure the 'theaters' table is populated in the database.
                 </div>
               </DashboardCard>
 
@@ -896,7 +822,7 @@ const Distribution = () => {
                               onClick={() =>
                                 handleDelete("marketing", campaign.id!)
                               }
-                              disabled={isSaving}
+                              disabled={isSaving || !campaign.id}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -1147,7 +1073,7 @@ const Distribution = () => {
                             onClick={() =>
                               handleDelete("releases", release.id!)
                             }
-                            disabled={isSaving}
+                            disabled={isSaving || !release.id}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>

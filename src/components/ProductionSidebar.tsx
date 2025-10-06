@@ -9,8 +9,9 @@ import {
   Film as FilmIcon,
   Package,
   Plus,
+  LogOut,
 } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
   Sidebar,
   SidebarContent,
@@ -24,6 +25,7 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const navigationItems = [
@@ -50,6 +52,17 @@ export function ProductionSidebar({
   onDeleteProject,
   isSubmitting,
 }: ProductionSidebarProps) {
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    console.log(
+      "Logging out: Removing isAuthenticated and selectedProjectId from localStorage"
+    );
+    localStorage.removeItem("isAuthenticated");
+    localStorage.removeItem("selectedProjectId");
+    navigate("/");
+  };
+
   return (
     <Sidebar className="border-r border-border bg-card/50 backdrop-blur-sm w-64">
       <SidebarHeader className="border-b border-border p-6 bg-card rounded-lg shadow-sm">
@@ -58,9 +71,7 @@ export function ProductionSidebar({
             <Film className="h-6 w-6 text-primary-foreground" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-foreground">
-              Production Copilot
-            </h2>
+            <h2 className="text-xl font-bold text-foreground">POD . AI</h2>
             <p className="text-xs text-muted-foreground">AI Production Suite</p>
           </div>
         </div>
@@ -117,12 +128,24 @@ export function ProductionSidebar({
       </SidebarContent>
 
       <SidebarFooter className="border-t border-border p-4 bg-card rounded-lg shadow-sm">
-        <SettingsDialog
-          selectedProjectId={selectedProjectId}
-          projects={projects}
-          onDeleteProject={onDeleteProject}
-          isSubmitting={isSubmitting}
-        />
+        <div className="flex items-center gap-2">
+          <SettingsDialog
+            selectedProjectId={selectedProjectId}
+            projects={projects}
+            onDeleteProject={onDeleteProject}
+            isSubmitting={isSubmitting}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleLogout}
+            disabled={isSubmitting}
+            className="flex items-center gap-2 text-foreground hover:bg-secondary/20"
+          >
+            <LogOut className="h-4 w-4" />
+            <span>Logout</span>
+          </Button>
+        </div>
       </SidebarFooter>
     </Sidebar>
   );

@@ -5,9 +5,6 @@ import {
   FileText,
   Users,
   MapPin,
-  Calendar,
-  CheckCircle,
-  Clock,
   Edit2,
   Save,
   Plus,
@@ -46,7 +43,7 @@ class ErrorBoundary extends Component<any, { hasError: boolean }> {
 
 // Define interfaces for type safety
 interface ScriptVersion {
-  id?: number;
+  id?: string;
   version: string;
   date: string;
   status: string;
@@ -54,7 +51,7 @@ interface ScriptVersion {
 }
 
 interface CastingProgress {
-  id?: number;
+  id?: string;
   role: string;
   actor: string;
   status: string;
@@ -62,7 +59,7 @@ interface CastingProgress {
 }
 
 interface Location {
-  id?: number;
+  id?: string;
   name: string;
   type: string;
   cost: string;
@@ -79,6 +76,8 @@ const tableMap: Record<Section, TableName> = {
 };
 
 const PreProduction = () => {
+  console.log("Using PreProduction.tsx version b1c2d3e4");
+
   const [scriptVersions, setScriptVersions] = useState<ScriptVersion[]>([]);
   const [castingProgress, setCastingProgress] = useState<CastingProgress[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -98,118 +97,169 @@ const PreProduction = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  // Fetch data from Supabase
+  // Fetch projects and set selectedProjectId
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchProjects = async () => {
+      console.log("Fetching projects list");
       try {
-        // Fetch projects for the sidebar
+        setLoading(true);
+        setError(null);
         const { data: projectsData, error: projectsError } = await supabase
           .from("projects")
           .select("id, name");
         if (projectsError) {
           console.error("Projects fetch error:", projectsError);
-        } else {
-          setProjects(projectsData || []);
-          // Set the selected project ID (e.g., for "Pranayam Oru Thudakkam")
-          const selectedProject = projectsData?.find(
-            (p) => p.name === "Pranayam Oru Thudakkam"
-          );
-          if (selectedProject) {
-            setSelectedProjectId(selectedProject.id);
-          }
-        }
-
-        // Fetch project ID
-        const { data: project, error: projectError } = await supabase
-          .from("projects")
-          .select("id")
-          .eq("name", "Pranayam Oru Thudakkam")
-          .single();
-        if (projectError) {
-          console.error("Project fetch error:", projectError);
+          setError(`Failed to fetch projects: ${projectsError.message}`);
           return;
         }
-        const projectId = project.id;
+        console.log("Projects fetched:", projectsData);
+        setProjects(projectsData || []);
 
+        const storedProjectId = localStorage.getItem("selectedProjectId");
+        console.log("Stored selectedProjectId:", storedProjectId);
+        const selectedProject = projectsData?.find(
+          (p) => p.name === "Pranayam Oru Thudakkam"
+        );
+        if (
+          storedProjectId &&
+          projectsData?.some((p) => p.id === storedProjectId)
+        ) {
+          setSelectedProjectId(storedProjectId);
+        } else if (selectedProject) {
+          setSelectedProjectId(selectedProject.id);
+          localStorage.setItem("selectedProjectId", selectedProject.id);
+        } else if (projectsData?.length > 0) {
+          setSelectedProjectId(projectsData[0].id);
+          localStorage.setItem("selectedProjectId", projectsData[0].id);
+        } else {
+          setError("No projects available.");
+        }
+      } catch (err) {
+        console.error("Fetch projects error:", err);
+        setError("An unexpected error occurred while fetching projects.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchProjects();
+  }, []);
+
+  // Listen for localStorage changes
+  useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === "selectedProjectId") {
+        const newProjectId = event.newValue || "";
+        console.log(
+          "Storage event: selectedProjectId changed to",
+          newProjectId
+        );
+        if (newProjectId && projects.some((p) => p.id === newProjectId)) {
+          setSelectedProjectId(newProjectId);
+        } else {
+          setSelectedProjectId("");
+          setError("Selected project is invalid or not found.");
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, [projects]);
+
+  // Fetch project data
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!selectedProjectId) {
+        console.log("No selectedProjectId, skipping fetch");
+        setError("No project selected.");
+        setScriptVersions([]);
+        setCastingProgress([]);
+        setLocations([]);
+        setLoading(false);
+        return;
+      }
+      console.log("Fetching project data for ID:", selectedProjectId);
+      setLoading(true);
+      setError(null);
+      try {
         // Script Versions (from scripts table)
         const { data: scripts, error: scriptsError } = await supabase
           .from("scripts")
           .select("id, version, date, status, author")
-          .eq("project_id", projectId)
+          .eq("project_id", selectedProjectId)
           .order("date", { ascending: false });
         if (scriptsError) {
           console.error("Scripts fetch error:", scriptsError);
+          if (scriptsError.message.includes("Could not find the table")) {
+            setError(
+              "The 'scripts' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor."
+            );
+          } else {
+            setError(
+              `Failed to fetch script versions: ${scriptsError.message}`
+            );
+          }
+          setScriptVersions([]);
         } else {
+          console.log("Scripts fetched:", scripts);
           setScriptVersions(
-            scripts.length > 0
-              ? scripts.map((script) => ({
-                  id: script.id,
-                  version: script.version,
-                  date: new Date(script.date).toLocaleDateString("en-GB", {
+            scripts?.map((script) => ({
+              id: script.id,
+              version: script.version || "Unknown",
+              date: script.date
+                ? new Date(script.date).toLocaleDateString("en-GB", {
                     day: "2-digit",
                     month: "short",
-                  }),
-                  status: script.status,
-                  author: script.author,
-                }))
-              : [
-                  {
-                    version: "v3.2",
-                    date: "02 Oct",
-                    status: "Final",
-                    author: "John Doe",
-                  },
-                  {
-                    version: "v3.1",
-                    date: "28 Sep",
-                    status: "Draft",
-                    author: "Jane Smith",
-                  },
-                  {
-                    version: "v3.0",
-                    date: "20 Sep",
-                    status: "Review",
-                    author: "TBD",
-                  },
-                ]
+                  })
+                : "TBD",
+              status: script.status || "Draft",
+              author: script.author || "TBD",
+            })) || []
           );
         }
 
-        // Casting Progress (from crew table)
+        // Casting Progress (from crew table, filtered by department = 'Casting')
         const { data: castingCrew, error: castingCrewError } = await supabase
           .from("crew")
-          .select("id, name, role")
-          .eq("project_id", projectId)
-          .limit(4);
+          .select("id, name, role, status")
+          .eq("project_id", selectedProjectId)
+          .eq("department", "Casting");
         if (castingCrewError) {
           console.error("Casting fetch error:", castingCrewError);
+          if (castingCrewError.message.includes("Could not find the table")) {
+            setError(
+              "The 'crew' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor."
+            );
+          } else {
+            setError(
+              `Failed to fetch casting progress: ${castingCrewError.message}`
+            );
+          }
+          setCastingProgress([]);
         } else {
+          console.log("Casting crew fetched:", castingCrew);
           setCastingProgress(
-            castingCrew.map((crew, idx) => {
-              const roles = [
-                "Lead Hero",
-                "Lead Heroine",
-                "Antagonist",
-                "Supporting Cast",
-              ];
-              const status =
-                idx === 1
-                  ? "Completed"
-                  : idx === 0
-                  ? "In Progress"
-                  : idx === 2
-                  ? "Review"
-                  : "Not Started";
-              return {
-                id: crew.id,
-                role: roles[idx] || crew.role,
-                actor:
-                  idx === 1 ? crew.name : idx === 2 ? "Shortlisted (3)" : "TBD",
-                status,
-                auditions: [12, 8, 15, 0][idx],
-              };
-            })
+            castingCrew?.map((crew, idx) => ({
+              id: crew.id,
+              role: crew.role || "Unknown",
+              actor:
+                crew.name ||
+                (crew.status === "Review" ? "Shortlisted (3)" : "TBD"),
+              status:
+                crew.status ||
+                ["In Progress", "Completed", "Review", "Not Started"][idx % 4],
+              auditions:
+                crew.status === "Completed"
+                  ? 8
+                  : crew.status === "Review"
+                  ? 15
+                  : crew.status === "In Progress"
+                  ? 12
+                  : 0,
+            })) || []
           );
         }
 
@@ -217,55 +267,48 @@ const PreProduction = () => {
         const { data: locationData, error: locationError } = await supabase
           .from("locations")
           .select("id, name, type, cost, status")
-          .eq("project_id", projectId)
-          .limit(3);
+          .eq("project_id", selectedProjectId);
         if (locationError) {
           console.error("Locations fetch error:", locationError);
+          if (locationError.message.includes("Could not find the table")) {
+            setError(
+              "The 'locations' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor."
+            );
+          } else {
+            setError(`Failed to fetch locations: ${locationError.message}`);
+          }
+          setLocations([]);
         } else {
+          console.log("Locations fetched:", locationData);
           setLocations(
-            locationData.length > 0
-              ? locationData.map((location) => ({
-                  id: location.id,
-                  name: location.name,
-                  type: location.type,
-                  cost: `₹${(location.cost / 100000).toFixed(0)}L`,
-                  status: location.status,
-                }))
-              : [
-                  {
-                    name: "Ramoji Film City",
-                    type: "Studio",
-                    cost: "₹8L",
-                    status: "Booked",
-                  },
-                  {
-                    name: "Hyderabad Old City",
-                    type: "Outdoor",
-                    cost: "₹2L",
-                    status: "Recce Done",
-                  },
-                  {
-                    name: "Araku Valley",
-                    type: "Outdoor",
-                    cost: "₹5L",
-                    status: "Pending Approval",
-                  },
-                ]
+            locationData?.map((location) => ({
+              id: location.id,
+              name: location.name || "Unknown",
+              type: location.type || "Unknown",
+              cost: `₹${(location.cost / 100000).toFixed(0)}L`,
+              status: location.status || "Pending Approval",
+            })) || []
           );
         }
-      } catch (error) {
-        console.error("Fetch error:", error);
+      } catch (err: any) {
+        console.error("Fetch project data error:", err);
+        setError(`An unexpected error occurred: ${err.message || err}`);
+        setScriptVersions([]);
+        setCastingProgress([]);
+        setLocations([]);
+      } finally {
+        setLoading(false);
       }
     };
-
     fetchData();
-  }, []);
+  }, [selectedProjectId, refreshKey]);
 
   // Handle project deletion
   const onDeleteProject = async () => {
     if (!selectedProjectId) return;
     setIsSubmitting(true);
     try {
+      console.log("Deleting project with ID:", selectedProjectId);
       const { error } = await supabase
         .from("projects")
         .delete()
@@ -273,37 +316,37 @@ const PreProduction = () => {
       if (error) throw error;
       setProjects(projects.filter((p) => p.id !== selectedProjectId));
       setSelectedProjectId("");
+      localStorage.removeItem("selectedProjectId");
       alert("Project deleted successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Delete project error:", error);
-      alert("Failed to delete project.");
+      alert(`Failed to delete project: ${error.message}`);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Handle updates to Supabase - Consolidated CRUD
+  // Handle updates to Supabase
   const handleSave = async (section: Section) => {
-    if (isSaving) return;
+    if (isSaving || !selectedProjectId) return;
     setIsSaving(true);
+    const table = tableMap[section];
+    if (!table) {
+      setIsSaving(false);
+      const errorMsg = `Invalid section: ${section}`;
+      console.error(errorMsg);
+      setError(errorMsg);
+      alert(errorMsg);
+      return;
+    }
     try {
-      const { data: projectData } = await supabase
-        .from("projects")
-        .select("id")
-        .eq("name", "Pranayam Oru Thudakkam")
-        .single();
-      const projectId = projectData?.id;
-      if (!projectId) {
-        throw new Error("Project not found");
-      }
-
-      const table = tableMap[section];
+      console.log(`Saving ${section} for project ID:`, selectedProjectId);
 
       if (section === "scriptVersions") {
         // Update existing script versions
         for (const script of scriptVersions.filter((s) => s.id !== undefined)) {
           const date =
-            script.date !== "TBD"
+            script.date && script.date !== "TBD"
               ? new Date(script.date.split(" ").reverse().join("-"))
                   .toISOString()
                   .split("T")[0]
@@ -311,13 +354,14 @@ const PreProduction = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               version: script.version,
               date,
               status: script.status,
               author: script.author,
             })
-            .eq("id", script.id);
+            .eq("id", script.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new script version
@@ -335,7 +379,7 @@ const PreProduction = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               version: newScriptVersion.version,
               date,
               status: newScriptVersion.status || "Draft",
@@ -363,11 +407,14 @@ const PreProduction = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               name: cast.actor.includes("Shortlisted") ? null : cast.actor,
               role: cast.role,
+              status: cast.status,
+              department: "Casting",
             })
-            .eq("id", cast.id);
+            .eq("id", cast.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new casting progress
@@ -375,11 +422,13 @@ const PreProduction = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               name: newCastingProgress.actor.includes("Shortlisted")
                 ? null
                 : newCastingProgress.actor,
               role: newCastingProgress.role,
+              status: newCastingProgress.status || "Not Started",
+              department: "Casting",
             })
             .select("id")
             .single();
@@ -405,13 +454,14 @@ const PreProduction = () => {
           const { error } = await supabase
             .from(table)
             .update({
-              project_id: projectId,
+              project_id: selectedProjectId,
               name: location.name,
               type: location.type,
               cost: costNum,
               status: location.status,
             })
-            .eq("id", location.id);
+            .eq("id", location.id)
+            .eq("project_id", selectedProjectId);
           if (error) throw error;
         }
         // Insert new location
@@ -421,7 +471,7 @@ const PreProduction = () => {
           const { data: insertedData, error } = await supabase
             .from(table)
             .insert({
-              project_id: projectId,
+              project_id: selectedProjectId,
               name: newLocation.name,
               type: newLocation.type,
               cost: costNum,
@@ -445,13 +495,17 @@ const PreProduction = () => {
         }
       }
 
+      console.log(`${section} saved successfully`);
+      setRefreshKey((prev) => prev + 1);
       setEditMode({ ...editMode, [section]: false });
       alert("Changes saved successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Save ${section} error:`, error);
-      alert(
-        `Failed to save changes for ${section}. Check console for details.`
-      );
+      const errorMsg = error.message.includes("Could not find the table")
+        ? `The '${table}' table does not exist in the database. Please create it using the provided SQL in the Supabase SQL Editor.`
+        : `Failed to save changes for ${section}: ${error.message}`;
+      setError(errorMsg);
+      alert(errorMsg);
     } finally {
       setIsSaving(false);
     }
@@ -512,7 +566,7 @@ const PreProduction = () => {
   };
 
   // Handle deleting items
-  const handleDelete = async (section: Section, id: number) => {
+  const handleDelete = async (section: Section, id: string) => {
     if (
       !window.confirm(
         `Are you sure you want to delete this ${section.slice(0, -1)}?`
@@ -521,8 +575,13 @@ const PreProduction = () => {
       return;
     }
     try {
+      console.log(`Deleting ${section} with ID:`, id);
       const table = tableMap[section];
-      const { error } = await supabase.from(table).delete().eq("id", id);
+      const { error } = await supabase
+        .from(table)
+        .delete()
+        .eq("id", id)
+        .eq("project_id", selectedProjectId);
       if (error) throw error;
       if (section === "scriptVersions") {
         setScriptVersions(scriptVersions.filter((s) => s.id !== id));
@@ -532,15 +591,13 @@ const PreProduction = () => {
         setLocations(locations.filter((l) => l.id !== id));
       }
       alert(`${section.slice(0, -1)} deleted successfully!`);
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Delete ${section} error:`, error);
-      alert(
-        `Failed to delete ${section.slice(0, -1)}. Check console for details.`
-      );
+      alert(`Failed to delete ${section.slice(0, -1)}: ${error.message}`);
     }
   };
 
-  // Cancel edit mode and reset new item forms
+  // Cancel edit mode and reset forms
   const handleCancel = (section: Section) => {
     if (section === "scriptVersions") {
       setNewScriptVersion({});
@@ -549,8 +606,22 @@ const PreProduction = () => {
     } else if (section === "locations") {
       setNewLocation({});
     }
+    setRefreshKey((prev) => prev + 1); // Re-fetch data
     setEditMode({ ...editMode, [section]: false });
   };
+
+  // Render loading or error states
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
+
+  if (!selectedProjectId) {
+    return <div>Please select a project from the sidebar.</div>;
+  }
 
   return (
     <ErrorBoundary>
@@ -612,7 +683,7 @@ const PreProduction = () => {
                   {editMode.scriptVersions && (
                     <div className="p-3 bg-secondary/20 rounded-lg space-y-2 mb-3">
                       <Input
-                        placeholder="Version (e.g., v3.3)"
+                        placeholder="Version (e.g., v1.0)"
                         value={newScriptVersion.version || ""}
                         onChange={(e) =>
                           setNewScriptVersion({
@@ -622,16 +693,33 @@ const PreProduction = () => {
                         }
                         className="mb-2"
                       />
-                      <Input
-                        placeholder="Date (e.g., 02 Oct)"
-                        value={newScriptVersion.date || ""}
-                        onChange={(e) =>
+                      <DatePicker
+                        selected={
+                          newScriptVersion.date
+                            ? new Date(
+                                newScriptVersion.date
+                                  .split(" ")
+                                  .reverse()
+                                  .join("-")
+                              )
+                            : null
+                        }
+                        onChange={(date: Date) =>
                           setNewScriptVersion({
                             ...newScriptVersion,
-                            date: e.target.value,
+                            date: date
+                              ? date.toLocaleDateString("en-GB", {
+                                  day: "2-digit",
+                                  month: "short",
+                                })
+                              : "",
                           })
                         }
-                        className="mb-2"
+                        dateFormat="dd MMM"
+                        placeholderText="Select Date (e.g., 02 Oct)"
+                        customInput={
+                          <Input className="w-full bg-card border border-border text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary" />
+                        }
                       />
                       <Input
                         placeholder="Author"
@@ -666,105 +754,130 @@ const PreProduction = () => {
                         Current Version
                       </p>
                       <p className="text-2xl font-bold text-foreground">
-                        {scriptVersions[0]?.version || "v3.2"} -{" "}
-                        {scriptVersions[0]?.status || "Final"}
+                        {scriptVersions[0]?.version || "N/A"} -{" "}
+                        {scriptVersions[0]?.status || "Draft"}
                       </p>
                     </div>
                     <Badge variant="default">Approved</Badge>
                   </div>
                   <div className="space-y-2">
-                    {scriptVersions.map((script, idx) => (
-                      <div
-                        key={script.id || idx}
-                        className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
-                      >
-                        {editMode.scriptVersions ? (
-                          <>
-                            <div className="flex-1 space-y-2 mr-2">
-                              <Input
-                                value={script.version}
-                                onChange={(e) => {
-                                  const newScripts = [...scriptVersions];
-                                  newScripts[idx].version = e.target.value;
-                                  setScriptVersions(newScripts);
-                                }}
-                                className="mb-2"
-                              />
-                              <Input
-                                value={script.date}
-                                onChange={(e) => {
-                                  const newScripts = [...scriptVersions];
-                                  newScripts[idx].date = e.target.value;
-                                  setScriptVersions(newScripts);
-                                }}
-                                className="mb-2"
-                              />
-                              <Input
-                                value={script.author}
-                                onChange={(e) => {
-                                  const newScripts = [...scriptVersions];
-                                  newScripts[idx].author = e.target.value;
-                                  setScriptVersions(newScripts);
-                                }}
-                                className="mb-2"
-                              />
-                              <select
-                                value={script.status}
-                                onChange={(e) => {
-                                  const newScripts = [...scriptVersions];
-                                  newScripts[idx].status = e.target.value;
-                                  setScriptVersions(newScripts);
-                                }}
-                                className="w-full p-2 border border-input rounded-md mb-2"
-                              >
-                                <option value="Draft">Draft</option>
-                                <option value="Review">Review</option>
-                                <option value="Final">Final</option>
-                              </select>
-                            </div>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() =>
-                                handleDelete("scriptVersions", script.id!)
-                              }
-                              disabled={isSaving || isSubmitting}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <div className="flex items-center gap-3">
-                              <FileText className="w-4 h-4 text-muted-foreground" />
-                              <div>
-                                <p className="font-medium text-sm">
-                                  {script.version}
-                                </p>
-                                <p className="text-xs text-muted-foreground">
-                                  {script.author}
-                                </p>
+                    {scriptVersions.length === 0 ? (
+                      <p className="text-muted-foreground">
+                        No script versions available.
+                      </p>
+                    ) : (
+                      scriptVersions.map((script, idx) => (
+                        <div
+                          key={script.id || idx}
+                          className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
+                        >
+                          {editMode.scriptVersions ? (
+                            <>
+                              <div className="flex-1 space-y-2 mr-2">
+                                <Input
+                                  value={script.version}
+                                  onChange={(e) => {
+                                    const newScripts = [...scriptVersions];
+                                    newScripts[idx].version = e.target.value;
+                                    setScriptVersions(newScripts);
+                                  }}
+                                  className="mb-2"
+                                />
+                                <DatePicker
+                                  selected={
+                                    script.date && script.date !== "TBD"
+                                      ? new Date(
+                                          script.date
+                                            .split(" ")
+                                            .reverse()
+                                            .join("-")
+                                        )
+                                      : null
+                                  }
+                                  onChange={(date: Date) => {
+                                    const newScripts = [...scriptVersions];
+                                    newScripts[idx].date = date
+                                      ? date.toLocaleDateString("en-GB", {
+                                          day: "2-digit",
+                                          month: "short",
+                                        })
+                                      : "TBD";
+                                    setScriptVersions(newScripts);
+                                  }}
+                                  dateFormat="dd MMM"
+                                  placeholderText="Select Date (e.g., 02 Oct)"
+                                  customInput={
+                                    <Input className="w-full bg-card border border-border text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary mb-2" />
+                                  }
+                                />
+                                <Input
+                                  value={script.author}
+                                  onChange={(e) => {
+                                    const newScripts = [...scriptVersions];
+                                    newScripts[idx].author = e.target.value;
+                                    setScriptVersions(newScripts);
+                                  }}
+                                  className="mb-2"
+                                />
+                                <select
+                                  value={script.status}
+                                  onChange={(e) => {
+                                    const newScripts = [...scriptVersions];
+                                    newScripts[idx].status = e.target.value;
+                                    setScriptVersions(newScripts);
+                                  }}
+                                  className="w-full p-2 border border-input rounded-md mb-2"
+                                >
+                                  <option value="Draft">Draft</option>
+                                  <option value="Review">Review</option>
+                                  <option value="Final">Final</option>
+                                </select>
                               </div>
-                            </div>
-                            <div className="text-right">
-                              <Badge
-                                variant={
-                                  script.status === "Final"
-                                    ? "default"
-                                    : "outline"
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() =>
+                                  handleDelete("scriptVersions", script.id!)
                                 }
-                                className="text-xs"
+                                disabled={
+                                  isSaving || isSubmitting || !script.id
+                                }
                               >
-                                {script.status}
-                              </Badge>{" "}
-                              <p className="text-xs text-muted-foreground mt-1">
-                                {script.date}
-                              </p>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    ))}
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-3">
+                                <FileText className="w-4 h-4 text-muted-foreground" />
+                                <div>
+                                  <p className="font-medium text-sm">
+                                    {script.version}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {script.author}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <Badge
+                                  variant={
+                                    script.status === "Final"
+                                      ? "default"
+                                      : "outline"
+                                  }
+                                >
+                                  <p className="text-xs">{script.status}</p>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {script.date}
+                                  </p>
+                                </Badge>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ))
+                    )}
                   </div>
                   {editMode.scriptVersions && (
                     <Button
@@ -816,7 +929,7 @@ const PreProduction = () => {
                   {editMode.castingProgress && (
                     <div className="p-3 bg-secondary/20 rounded-lg space-y-2 mb-3">
                       <Input
-                        placeholder="Role"
+                        placeholder="Role (e.g., Lead Hero)"
                         value={newCastingProgress.role || ""}
                         onChange={(e) =>
                           setNewCastingProgress({
@@ -827,7 +940,7 @@ const PreProduction = () => {
                         className="mb-2"
                       />
                       <Input
-                        placeholder="Actor"
+                        placeholder="Actor (e.g., Actor Name or Shortlisted)"
                         value={newCastingProgress.actor || ""}
                         onChange={(e) =>
                           setNewCastingProgress({
@@ -843,6 +956,14 @@ const PreProduction = () => {
                           setNewCastingProgress({
                             ...newCastingProgress,
                             status: e.target.value,
+                            auditions:
+                              e.target.value === "Completed"
+                                ? 8
+                                : e.target.value === "Review"
+                                ? 15
+                                : e.target.value === "In Progress"
+                                ? 12
+                                : 0,
                           })
                         }
                         className="w-full p-2 border border-input rounded-md mb-2"
@@ -870,106 +991,122 @@ const PreProduction = () => {
                       />
                     </div>
                   )}
-                  {castingProgress.map((cast, idx) => (
-                    <div key={cast.id || idx} className="space-y-2">
-                      {editMode.castingProgress ? (
-                        <>
-                          <div className="flex justify-between items-center mb-2">
+                  {castingProgress.length === 0 ? (
+                    <p className="text-muted-foreground">
+                      No casting progress available.
+                    </p>
+                  ) : (
+                    castingProgress.map((cast, idx) => (
+                      <div key={cast.id || idx} className="space-y-2">
+                        {editMode.castingProgress ? (
+                          <>
+                            <div className="flex justify-between items-center mb-2">
+                              <Input
+                                value={cast.role}
+                                onChange={(e) => {
+                                  const newCasting = [...castingProgress];
+                                  newCasting[idx].role = e.target.value;
+                                  setCastingProgress(newCasting);
+                                }}
+                                className="flex-1 mr-2"
+                              />
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() =>
+                                  handleDelete("castingProgress", cast.id!)
+                                }
+                                disabled={isSaving || isSubmitting || !cast.id}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
                             <Input
-                              value={cast.role}
+                              value={cast.actor}
                               onChange={(e) => {
                                 const newCasting = [...castingProgress];
-                                newCasting[idx].role = e.target.value;
+                                newCasting[idx].actor = e.target.value;
                                 setCastingProgress(newCasting);
                               }}
-                              className="flex-1 mr-2"
+                              className="mb-2"
                             />
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() =>
-                                handleDelete("castingProgress", cast.id!)
-                              }
-                              disabled={isSaving || isSubmitting}
+                            <select
+                              value={cast.status}
+                              onChange={(e) => {
+                                const newCasting = [...castingProgress];
+                                newCasting[idx].status = e.target.value;
+                                newCasting[idx].auditions =
+                                  e.target.value === "Completed"
+                                    ? 8
+                                    : e.target.value === "Review"
+                                    ? 15
+                                    : e.target.value === "In Progress"
+                                    ? 12
+                                    : 0;
+                                setCastingProgress(newCasting);
+                              }}
+                              className="w-full p-2 border border-input rounded-md mb-2"
                             >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                          <Input
-                            value={cast.actor}
-                            onChange={(e) => {
-                              const newCasting = [...castingProgress];
-                              newCasting[idx].actor = e.target.value;
-                              setCastingProgress(newCasting);
-                            }}
-                            className="mb-2"
-                          />
-                          <select
-                            value={cast.status}
-                            onChange={(e) => {
-                              const newCasting = [...castingProgress];
-                              newCasting[idx].status = e.target.value;
-                              setCastingProgress(newCasting);
-                            }}
-                            className="w-full p-2 border border-input rounded-md mb-2"
-                          >
-                            <option value="Not Started">Not Started</option>
-                            <option value="In Progress">In Progress</option>
-                            <option value="Review">Review</option>
-                            <option value="Completed">Completed</option>
-                          </select>
-                          <Input
-                            type="number"
-                            value={cast.auditions}
-                            onChange={(e) => {
-                              const newCasting = [...castingProgress];
-                              newCasting[idx].auditions =
-                                parseInt(e.target.value) || 0;
-                              setCastingProgress(newCasting);
-                            }}
-                            className="mb-2"
-                          />
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="font-medium text-sm">{cast.role}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {cast.actor}
-                              </p>
+                              <option value="Not Started">Not Started</option>
+                              <option value="In Progress">In Progress</option>
+                              <option value="Review">Review</option>
+                              <option value="Completed">Completed</option>
+                            </select>
+                            <Input
+                              type="number"
+                              value={cast.auditions}
+                              onChange={(e) => {
+                                const newCasting = [...castingProgress];
+                                newCasting[idx].auditions =
+                                  parseInt(e.target.value) || 0;
+                                setCastingProgress(newCasting);
+                              }}
+                              className="mb-2"
+                            />
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="font-medium text-sm">
+                                  {cast.role}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {cast.actor}
+                                </p>
+                              </div>
+                              <Badge
+                                variant={
+                                  cast.status === "Completed"
+                                    ? "default"
+                                    : "outline"
+                                }
+                                className="text-xs"
+                              >
+                                {cast.status}
+                              </Badge>
                             </div>
-                            <Badge
-                              variant={
-                                cast.status === "Completed"
-                                  ? "default"
-                                  : "outline"
-                              }
-                              className="text-xs"
-                            >
-                              {cast.status}
-                            </Badge>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Progress
-                              value={
-                                cast.status === "Completed"
-                                  ? 100
-                                  : cast.status === "Review"
-                                  ? 75
-                                  : cast.status === "In Progress"
-                                  ? 50
-                                  : 0
-                              }
-                            />
-                            <span className="text-xs text-muted-foreground whitespace-nowrap">
-                              {cast.auditions} auditions
-                            </span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                            <div className="flex items-center gap-2">
+                              <Progress
+                                value={
+                                  cast.status === "Completed"
+                                    ? 100
+                                    : cast.status === "Review"
+                                    ? 75
+                                    : cast.status === "In Progress"
+                                    ? 50
+                                    : 0
+                                }
+                              />
+                              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                {cast.auditions} auditions
+                              </span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))
+                  )}
                   {editMode.castingProgress && (
                     <Button
                       variant="default"
@@ -1016,7 +1153,7 @@ const PreProduction = () => {
                   {editMode.locations && (
                     <div className="p-3 bg-secondary/20 rounded-lg space-y-2 mb-3">
                       <Input
-                        placeholder="Name"
+                        placeholder="Name (e.g., Film Studio)"
                         value={newLocation.name || ""}
                         onChange={(e) =>
                           setNewLocation({
@@ -1027,7 +1164,7 @@ const PreProduction = () => {
                         className="mb-2"
                       />
                       <Input
-                        placeholder="Type"
+                        placeholder="Type (e.g., Studio)"
                         value={newLocation.type || ""}
                         onChange={(e) =>
                           setNewLocation({
@@ -1066,91 +1203,101 @@ const PreProduction = () => {
                       </select>
                     </div>
                   )}
-                  {locations.map((location, idx) => (
-                    <div
-                      key={location.id || idx}
-                      className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
-                    >
-                      {editMode.locations ? (
-                        <>
-                          <div className="flex-1 space-y-2 mr-2">
-                            <Input
-                              value={location.name}
-                              onChange={(e) => {
-                                const newLocations = [...locations];
-                                newLocations[idx].name = e.target.value;
-                                setLocations(newLocations);
-                              }}
-                              className="mb-2"
-                            />
-                            <Input
-                              value={location.type}
-                              onChange={(e) => {
-                                const newLocations = [...locations];
-                                newLocations[idx].type = e.target.value;
-                                setLocations(newLocations);
-                              }}
-                              className="mb-2"
-                            />
-                            <Input
-                              value={location.cost}
-                              onChange={(e) => {
-                                const newLocations = [...locations];
-                                newLocations[idx].cost = e.target.value;
-                                setLocations(newLocations);
-                              }}
-                              className="mb-2"
-                            />
-                            <select
-                              value={location.status}
-                              onChange={(e) => {
-                                const newLocations = [...locations];
-                                newLocations[idx].status = e.target.value;
-                                setLocations(newLocations);
-                              }}
-                              className="w-full p-2 border border-input rounded-md mb-2"
-                            >
-                              <option value="Pending Approval">
-                                Pending Approval
-                              </option>
-                              <option value="Recce Done">Recce Done</option>
-                              <option value="Booked">Booked</option>
-                            </select>
-                          </div>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() =>
-                              handleDelete("locations", location.id!)
-                            }
-                            disabled={isSaving || isSubmitting}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex items-center gap-3">
-                            <MapPin className="w-4 h-4 text-primary" />
-                            <div>
-                              <p className="font-medium text-sm">
-                                {location.name}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {location.type}
-                              </p>
+                  {locations.length === 0 ? (
+                    <p className="text-muted-foreground">
+                      No locations available.
+                    </p>
+                  ) : (
+                    locations.map((location, idx) => (
+                      <div
+                        key={location.id || idx}
+                        className="flex items-center justify-between p-3 bg-secondary/20 rounded-lg"
+                      >
+                        {editMode.locations ? (
+                          <>
+                            <div className="flex-1 space-y-2 mr-2">
+                              <Input
+                                value={location.name}
+                                onChange={(e) => {
+                                  const newLocations = [...locations];
+                                  newLocations[idx].name = e.target.value;
+                                  setLocations(newLocations);
+                                }}
+                                className="mb-2"
+                              />
+                              <Input
+                                value={location.type}
+                                onChange={(e) => {
+                                  const newLocations = [...locations];
+                                  newLocations[idx].type = e.target.value;
+                                  setLocations(newLocations);
+                                }}
+                                className="mb-2"
+                              />
+                              <Input
+                                value={location.cost}
+                                onChange={(e) => {
+                                  const newLocations = [...locations];
+                                  newLocations[idx].cost = e.target.value;
+                                  setLocations(newLocations);
+                                }}
+                                className="mb-2"
+                              />
+                              <select
+                                value={location.status}
+                                onChange={(e) => {
+                                  const newLocations = [...locations];
+                                  newLocations[idx].status = e.target.value;
+                                  setLocations(newLocations);
+                                }}
+                                className="w-full p-2 border border-input rounded-md mb-2"
+                              >
+                                <option value="Pending Approval">
+                                  Pending Approval
+                                </option>
+                                <option value="Recce Done">Recce Done</option>
+                                <option value="Booked">Booked</option>
+                              </select>
                             </div>
-                          </div>
-                          <div className="text-right">
-                            <p className="font-bold text-sm">{location.cost}</p>
-                            <Badge variant="outline" className="text-xs mt-1">
-                              {location.status}
-                            </Badge>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() =>
+                                handleDelete("locations", location.id!)
+                              }
+                              disabled={
+                                isSaving || isSubmitting || !location.id
+                              }
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-3">
+                              <MapPin className="w-4 h-4 text-primary" />
+                              <div>
+                                <p className="font-medium text-sm">
+                                  {location.name}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {location.type}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-bold text-sm">
+                                {location.cost}
+                              </p>
+                              <Badge variant="outline" className="text-xs mt-1">
+                                {location.status}
+                              </Badge>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))
+                  )}
                   {editMode.locations && (
                     <Button
                       variant="default"

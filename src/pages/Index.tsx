@@ -15,6 +15,7 @@ import {
   Film,
   FileText,
   Download,
+  Upload,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,7 @@ import {
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import UploadDialog from "@/components/UploadDialog";
 
 // Define interfaces for type safety
 
@@ -129,6 +131,7 @@ interface Deliverable {
 const Index = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [simulationOpen, setSimulationOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [stats, setStats] = useState<ProjectStats>({
     totalBudget: 0,
     daysInProduction: 0,
@@ -807,6 +810,16 @@ const Index = () => {
                   View Reports
                 </Button>
                 <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-32 text-xs"
+                  onClick={() => setUploadOpen(true)} // Open UploadDialog
+                  disabled={projects.length === 0}
+                >
+                  <Upload className="h-4 w-4 mr-2" />
+                  Upload Data
+                </Button>
+                <Button
                   variant="default"
                   size="sm"
                   className="w-32 text-xs"
@@ -833,6 +846,7 @@ const Index = () => {
             </div>
           ) : (
             <div className="p-6 space-y-6">
+              <UploadDialog open={uploadOpen} onOpenChange={setUploadOpen} />
               <Card className="bg-card border-border rounded-lg shadow-sm">
                 <CardHeader className="flex items-center justify-between">
                   <CardTitle className="text-lg font-semibold text-foreground">
