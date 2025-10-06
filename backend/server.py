@@ -615,7 +615,71 @@ Your role is to assist production teams by analyzing the provided structured dat
     except Exception as e:
         logger.error(f"Error in chat: {str(e)}")
         return jsonify({"error": "Failed to process chat request", "details": str(e)}), 500
+    
 
+
+@app.route("/realtime-message", methods=["POST"])
+def realtime_message():
+    try:
+        data = request.get_json()
+        logger.debug(f"Realtime event received: {json.dumps(data, indent=2)}")
+
+        table = data.get("table")
+        event_type = data.get("eventType")
+        new_row = data.get("new", {})
+        old_row = data.get("old", {})
+
+        if not model:
+            return jsonify({"message": f"{table} {event_type} event, AI unavailable."}), 200
+
+        def safe_json_dump(obj):
+            return json.dumps(obj, indent=2, default=lambda x: "null" if x is None else x)
+
+        prompt = f"""
+Summarize this production database update in one short, clear sentence.
+
+- Table: {table}
+- Event: {event_type}
+- New row: {safe_json_dump(new_row)}
+- Old row: {safe_json_dump(old_row)}
+
+Guidelines:
+- Always mention the table (e.g., invoice, crew, schedule).
+- For INSERT events, include vendor, amount, due date (if not null), and status if available.
+- For DELETE events, describe the deleted record using vendor, amount, and status (if available), and avoid using ID numbers.
+- If due_date is null, say "due date not set" instead of including it.
+- Examples:
+  - INSERT: "New invoice from Studio Gear for ₹150,000, due Oct 15, status Pending."
+  - DELETE: "Deleted an invoice from Studio Gear for ₹150,000, status Pending."
+  - Null due_date: "New invoice from Lighting Solutions for ₹200,000, due date not set, status Approved."
+- Keep it concise, human-readable, and production-friendly.
+- Do not output JSON, code blocks, or technical IDs (like UUIDs).
+- Use plain language suitable for a non-technical audience.
+"""
+        logger.debug(f"Gemini prompt: {prompt}")
+
+        # Retry logic for Gemini API
+        for attempt in range(3):
+            try:
+                response = model.generate_content(prompt)
+                reply = response.text.strip()
+                logger.debug(f"Gemini response: {reply}")
+                return jsonify({"message": reply}), 200
+            except Exception as e:
+                logger.warning(f"Gemini attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    sleep(2)  # Wait 2 seconds before retrying
+                else:
+                    logger.error(f"All Gemini retries failed: {e}")
+                    return jsonify({"message": f"⚠️ Failed to summarize {table} {event_type} event."}), 200
+
+    except Exception as e:
+        logger.error(f"Error in realtime_message: {e}")
+        return jsonify({"message": f"⚠️ Failed to summarize {table} {event_type} event."}), 200
+
+@app.route("/test", methods=["GET"])
+def test():
+    return jsonify({"status": "Flask server is up!"}), 200
 
 # Run
 if __name__ == "__main__":
